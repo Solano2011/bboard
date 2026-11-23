@@ -55,6 +55,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/v1/masters", masterHandler.List)
 	mux.Handle("POST /api/v1/masters", authMW(http.HandlerFunc(masterHandler.Create)))
 
+	mux.Handle("/", http.FileServer(http.Dir("web")))
 	// Оборачиваем весь роутер в глобальный middleware логирования
 	return middleware.Logger(log)(mux)
 }

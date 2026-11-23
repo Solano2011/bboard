@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bboard — Биржа мастеров и заказов</title>
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <!-- Top Navigation -->
+  <header class="navbar">
+    <div class="container navbar-inner">
+      <div class="brand" id="brandHome">
+        <span class="brand-badge">B</span>
+        <span class="brand-title">Bboard</span>
+      </div>
+
+      <nav class="nav-tabs" id="navTabs">
+        <button class="nav-tab active" data-tab="tasks">Лента заказов</button>
+        <button class="nav-tab" data-tab="masters">Каталог мастеров</button>
+      </nav>
+
+      <div class="nav-actions" id="navActions">
+        <!-- Рендерится динамически из app.js -->
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Workspace -->
+  <main class="container main-content">
+    <!-- Action & Filter Bar -->
+    <section class="toolbar">
+      <div class="filters">
+        <select id="filterCategory" class="input">
+          <option value="">Все категории</option>
+          <option value="electric">Электрика</option>
+          <option value="plumbing">Сантехника</option>
+          <option value="earthworks">Земляные работы</option>
+          <option value="repair">Ремонт и отделка</option>
+        </select>
+
+        <input type="text" id="filterCity" class="input" placeholder="Город (например, Астрахань)" />
+
+        <select id="filterStatus" class="input">
+          <option value="open">Открытые задачи</option>
+          <option value="in_progress">В работе</option>
+          <option value="completed">Завершённые</option>
+          <option value="canceled">Отменённые</option>
+        </select>
+
+        <button id="btnApplyFilters" class="btn btn-secondary">Найти</button>
+      </div>
+
+      <div class="primary-cta" id="primaryCta">
+        <!-- Кнопка «Создать заказ» или «Стать мастером» -->
+      </div>
+    </section>
+
+    <!-- Content Grid -->
+    <section id="contentGrid" class="grid"></section>
+  </main>
+
+  <!-- Toast Notifications -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- Modal Backdrop -->
+  <div id="modalBackdrop" class="modal-backdrop hidden">
+    <div class="modal-dialog" id="modalDialog">
+      <div class="modal-header">
+        <h3 id="modalTitle">Заголовок</h3>
+        <button class="modal-close" id="modalClose">×</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+    </div>
+  </div>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
