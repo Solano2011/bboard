@@ -66,7 +66,7 @@ function renderGrid(state) {
       grid.innerHTML = `<div class="empty-state">Анкет мастеров по выбранным фильтрам пока нет</div>`;
       return;
     }
-    grid.innerHTML = state.masters.map((m) => renderMasterCard(m)).join("");
+    grid.innerHTML = state.masters.map((m) => renderMasterCard(m, state.user)).join("");
   }
 }
 
@@ -218,6 +218,10 @@ function openCreateMasterModal() {
     <form id="createMasterForm">
       <div class="form-group"><label>Заголовок услуги</label><input class="input" name="headline" placeholder="Частный электрик, монтаж под ключ" required /></div>
       <div class="form-group">
+        <label>Телефон для связи *</label>
+        <input class="input" name="contact_phone" placeholder="+79991234567" required />
+      </div>
+      <div class="form-group">
         <label>Специализация</label>
         <select class="input" name="category">
           <option value="electric">Электрика</option>
@@ -238,9 +242,26 @@ function openCreateMasterModal() {
   document.getElementById("createMasterForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
+
+    let contactPhone = (fd.get("contact_phone") || "").trim();
+    if (!contactPhone) {
+      showToast("Укажите контактный телефон", "error");
+      return;
+    }
+    let cleaned = contactPhone.replace(/[\s()\-]/g, "");
+    if (cleaned.startsWith("8") && cleaned.length === 11) {
+      cleaned = "+7" + cleaned.slice(1);
+    }
+    if (!/^\+7\d{10}$/.test(cleaned)) {
+      showToast("Некорректный номер телефона. Формат: +7XXXXXXXXXX", "error");
+      return;
+    }
+    contactPhone = cleaned;
+
     try {
       await api.createMasterProfile({
         headline: fd.get("headline"),
+        contact_phone: contactPhone,
         category: fd.get("category"),
         city: fd.get("city"),
         experience_years: Number(fd.get("experience_years")),
@@ -369,6 +390,18 @@ document.addEventListener("click", async (e) => {
     try {
       await api.cancelTask(target.dataset.taskId);
       showToast("Задача отменена");
+      loadData();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  } else if (target.dataset.action === "delete-master") {
+    const masterId = target.dataset.masterId;
+    if (!confirm("Вы уверены, что хотите удалить свою анкету мастера?")) {
+      return;
+    }
+    try {
+      await api.deleteMasterProfile(masterId);
+      showToast("Анкета мастера успешно удалена", "success");
       loadData();
     } catch (err) {
       showToast(err.message, "error");

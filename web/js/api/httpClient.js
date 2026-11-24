@@ -100,6 +100,10 @@ class HttpClient {
   createMasterProfile(payload) {
     return this.request("/masters", { method: "POST", body: payload });
   }
+
+  deleteMasterProfile(id) {
+    return this.request(`/masters/${id}`, { method: "DELETE" });
+  }
 }
 
 export const api = new HttpClient("/api/v1");

@@ -1,10 +1,9 @@
-﻿package master
+package master
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"bboard/internal/domain/master"
 	"bboard/internal/domain/user"
@@ -55,14 +54,9 @@ func (uc *CreateProfileUseCase) Execute(ctx context.Context, input CreateProfile
 		return nil, fmt.Errorf("verify user: %w", err)
 	}
 
-	phone := strings.TrimSpace(input.ContactPhone)
-	if phone == "" {
-		phone = u.Phone
-	}
-
 	profile, err := master.NewProfile(
 		input.UserID,
-		phone,
+		input.ContactPhone,
 		input.Headline,
 		input.Bio,
 		input.Category,

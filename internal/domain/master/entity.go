@@ -1,9 +1,12 @@
 package master
 
 import (
+	"regexp"
 	"strings"
 	"time"
 )
+
+var phoneRegex = regexp.MustCompile(`^\+7\d{10}$`)
 
 // Profile представляет анкету исполнителя (мастера) на доске объявлений.
 type Profile struct {
@@ -22,6 +25,31 @@ type Profile struct {
 	UpdatedAt       time.Time
 }
 
+// normalizeAndValidatePhone очищает и строго валидирует формат номера телефона мастера.
+func normalizeAndValidatePhone(phone string) (string, error) {
+	phone = strings.TrimSpace(phone)
+	if phone == "" {
+		return "", ErrEmptyContactPhone
+	}
+
+	cleaned := strings.Map(func(r rune) rune {
+		if r == ' ' || r == '(' || r == ')' || r == '-' {
+			return -1
+		}
+		return r
+	}, phone)
+
+	if strings.HasPrefix(cleaned, "8") && len(cleaned) == 11 {
+		cleaned = "+7" + cleaned[1:]
+	}
+
+	if !phoneRegex.MatchString(cleaned) {
+		return "", ErrInvalidPhone
+	}
+
+	return cleaned, nil
+}
+
 // NewProfile создаёт и валидирует новую анкету мастера.
 func NewProfile(
 	userID int64,
@@ -37,9 +65,9 @@ func NewProfile(
 		return nil, ErrInvalidUserID
 	}
 
-	contactPhone = strings.TrimSpace(contactPhone)
-	if contactPhone == "" {
-		return nil, ErrEmptyContactPhone
+	normalizedPhone, err := normalizeAndValidatePhone(contactPhone)
+	if err != nil {
+		return nil, err
 	}
 
 	headline = strings.TrimSpace(headline)
@@ -71,7 +99,7 @@ func NewProfile(
 
 	return &Profile{
 		UserID:          userID,
-		ContactPhone:    contactPhone,
+		ContactPhone:    normalizedPhone,
 		Headline:        headline,
 		Bio:             bio,
 		Category:        category,
@@ -100,9 +128,9 @@ func (p *Profile) Update(
 		return ErrForbiddenAction
 	}
 
-	contactPhone = strings.TrimSpace(contactPhone)
-	if contactPhone == "" {
-		return ErrEmptyContactPhone
+	normalizedPhone, err := normalizeAndValidatePhone(contactPhone)
+	if err != nil {
+		return err
 	}
 
 	headline = strings.TrimSpace(headline)
@@ -130,7 +158,7 @@ func (p *Profile) Update(
 		return ErrInvalidMinPrice
 	}
 
-	p.ContactPhone = contactPhone
+	p.ContactPhone = normalizedPhone
 	p.Headline = headline
 	p.Bio = bio
 	p.Category = category

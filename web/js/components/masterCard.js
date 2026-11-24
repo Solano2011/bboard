@@ -7,12 +7,25 @@ const CATEGORY_LABELS = {
 
 function escapeHtml(str) {
   return String(str ?? "")
-    .replaceAll("&", "&")
-    .replaceAll("<", "<")
-    .replaceAll(">", ">");
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
 
-export function renderMasterCard(profile) {
+export function renderMasterCard(profile, currentUser) {
+  const isOwner = currentUser && currentUser.id === profile.user_id;
+
+  let actionsHtml = "";
+  if (isOwner) {
+    actionsHtml = `
+      <div class="card-actions">
+        <button class="btn btn-danger-outline btn-sm" data-action="delete-master" data-master-id="${profile.id}">
+          Удалить анкету
+        </button>
+      </div>
+    `;
+  }
+
   return `
     <article class="card">
       <div>
@@ -22,6 +35,11 @@ export function renderMasterCard(profile) {
         </div>
         <h3 class="card-title">${escapeHtml(profile.headline)}</h3>
         <p class="card-desc">${escapeHtml(profile.bio)}</p>
+        ${profile.contact_phone ? `
+          <div style="margin-top:10px; font-size:13px; color:var(--text-secondary);">
+            📞 Телефон: <a href="tel:${escapeHtml(profile.contact_phone)}">${escapeHtml(profile.contact_phone)}</a>
+          </div>
+        ` : ""}
       </div>
 
       <div>
@@ -29,6 +47,7 @@ export function renderMasterCard(profile) {
           <span>📍 ${escapeHtml(profile.city || "Не указан")} • Мастер #${profile.user_id}</span>
           <span class="price">от ${Number(profile.min_price).toLocaleString("ru-RU")} ₽</span>
         </div>
+        ${actionsHtml}
       </div>
     </article>
   `;

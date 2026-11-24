@@ -1,4 +1,4 @@
-﻿package postgres
+package postgres
 
 import (
 	"context"
@@ -144,6 +144,22 @@ func (r *MasterRepo) Update(ctx context.Context, p *master.Profile) error {
 	)
 	if err != nil {
 		return fmt.Errorf("update master profile: %w", err)
+	}
+	if cmdTag.RowsAffected() == 0 {
+		return master.ErrProfileNotFound
+	}
+	return nil
+}
+
+func (r *MasterRepo) Delete(ctx context.Context, id int64) error {
+	query := `DELETE FROM master_profiles WHERE id = $1`
+	cmdTag, err := r.pool.Exec(ctx, query, id)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return master.ErrProfileInUse
+		}
+		return fmt.Errorf("delete master profile: %w", err)
 	}
 	if cmdTag.RowsAffected() == 0 {
 		return master.ErrProfileNotFound

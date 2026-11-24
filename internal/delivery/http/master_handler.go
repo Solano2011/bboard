@@ -17,6 +17,7 @@ import (
 type MasterHandler struct {
 	createUC   *masterUC.CreateProfileUseCase
 	listUC     *masterUC.ListProfilesUseCase
+	deleteUC   *masterUC.DeleteProfileUseCase
 	masterRepo master.Repository
 	log        *logrus.Entry
 }
@@ -24,12 +25,14 @@ type MasterHandler struct {
 func NewMasterHandler(
 	createUC *masterUC.CreateProfileUseCase,
 	listUC *masterUC.ListProfilesUseCase,
+	deleteUC *masterUC.DeleteProfileUseCase,
 	masterRepo master.Repository,
 	log *logrus.Logger,
 ) *MasterHandler {
 	return &MasterHandler{
 		createUC:   createUC,
 		listUC:     listUC,
+		deleteUC:   deleteUC,
 		masterRepo: masterRepo,
 		log:        log.WithField("handler", "master"),
 	}
@@ -139,6 +142,31 @@ func (h *MasterHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, mapMasterToResponse(profile))
 }
 
+// Delete обрабатывает DELETE /api/v1/masters/{id} (удаление своей анкеты мастера).
+func (h *MasterHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	actorID, ok := middleware.UserIDFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
+		return
+	}
+
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid master id in path"})
+		return
+	}
+
+	if err := h.deleteUC.Execute(r.Context(), masterUC.DeleteProfileInput{
+		ProfileID: id,
+		ActorID:   actorID,
+	}); err != nil {
+		h.handleDomainError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
 func mapMasterToResponse(p *master.Profile) masterProfileResponse {
 	return masterProfileResponse{
 		ID:              p.ID,
@@ -161,6 +189,7 @@ func (h *MasterHandler) handleDomainError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, master.ErrInvalidUserID),
 		errors.Is(err, master.ErrEmptyContactPhone),
+		errors.Is(err, master.ErrInvalidPhone),
 		errors.Is(err, master.ErrEmptyHeadline),
 		errors.Is(err, master.ErrHeadlineTooShort),
 		errors.Is(err, master.ErrEmptyBio),
@@ -169,7 +198,11 @@ func (h *MasterHandler) handleDomainError(w http.ResponseWriter, err error) {
 		errors.Is(err, master.ErrInvalidMinPrice):
 		writeJSON(w, http.StatusBadRequest, errorResponse{Error: err.Error()})
 
-	case errors.Is(err, master.ErrProfileAlreadyExists):
+	case errors.Is(err, master.ErrForbiddenAction):
+		writeJSON(w, http.StatusForbidden, errorResponse{Error: err.Error()})
+
+	case errors.Is(err, master.ErrProfileAlreadyExists),
+		errors.Is(err, master.ErrProfileInUse):
 		writeJSON(w, http.StatusConflict, errorResponse{Error: err.Error()})
 
 	case errors.Is(err, master.ErrProfileNotFound):

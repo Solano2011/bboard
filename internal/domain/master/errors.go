@@ -12,8 +12,11 @@ var (
 	ErrInvalidExperience = errors.New("experience years cannot be negative")
 	ErrInvalidMinPrice   = errors.New("minimum price cannot be negative")
 	ErrEmptyContactPhone = errors.New("master contact phone cannot be empty")
+	ErrInvalidPhone      = errors.New("invalid contact phone format, expected +7XXXXXXXXXX")
+
 	// Ошибки состояния и прав
 	ErrProfileNotFound      = errors.New("master profile not found")
 	ErrProfileAlreadyExists = errors.New("user already has a master profile")
 	ErrForbiddenAction      = errors.New("user is not allowed to modify this master profile")
+	ErrProfileInUse         = errors.New("master profile cannot be deleted because it is in use")
 )

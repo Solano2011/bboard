@@ -52,10 +52,11 @@ func NewRouter(
 	mux.Handle("POST /api/v1/tasks/{id}/bids", authMW(http.HandlerFunc(bidHandler.Create)))
 	mux.Handle("GET /api/v1/tasks/{id}/bids", authMW(http.HandlerFunc(bidHandler.ListByTask)))
 
-	// Публичный каталог мастеров и создание анкеты
+	// Публичный каталог мастеров, создание и удаление анкеты
 	mux.HandleFunc("GET /api/v1/masters", masterHandler.List)
 	mux.HandleFunc("GET /api/v1/masters/{id}", masterHandler.GetByID)
 	mux.Handle("POST /api/v1/masters", authMW(http.HandlerFunc(masterHandler.Create)))
+	mux.Handle("DELETE /api/v1/masters/{id}", authMW(http.HandlerFunc(masterHandler.Delete)))
 
 	mux.Handle("/", http.FileServer(http.Dir("web")))
 	// Оборачиваем весь роутер в глобальный middleware логирования

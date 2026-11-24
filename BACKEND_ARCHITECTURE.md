@@ -21,7 +21,7 @@ bboard/
 │   ├── usecase/
 │   │   ├── auth/      (register.go, login.go)
 │   │   ├── task/      (create_task.go, list_tasks.go, assign_master.go, complete_task.go, cancel_task.go)
-│   │   ├── master/    (create_profile.go, list_profiles.go)
+│   │   ├── master/    (create_profile.go, list_profiles.go, delete_profile.go)
 │   │   └── bid/       (create_bid.go, list_bids.go)
 │   ├── repository/postgres/
 │   │   ├── user_repo.go
@@ -90,9 +90,9 @@ bboard/
 - **`repository.go`**: интерфейс `Repository` (`Create`, `GetByID`, `List(ctx, filter)`, `Update`) и структура `ListFilter`.
 
 ### `internal/domain/master` (Анкеты мастеров)
-- **`entity.go`**: структура `Profile`, конструктор `NewProfile` и метод `Update`. Проверяет минимальную длину заголовка, неотрицательный стаж (`ExperienceYears >= 0`) и минимальную цену (`MinPrice >= 0`), управляет флагом `IsActive`.
-- **`errors.go`**: `ErrProfileNotFound`, `ErrProfileAlreadyExists`, `ErrInvalidExperience`, `ErrInvalidMinPrice`.
-- **`repository.go`**: интерфейс `Repository` (`Create`, `GetByID`, `GetByUserID`, `List`, `Update`).
+- **`entity.go`**: структура `Profile`, конструктор `NewProfile`, метод `Update` и хелпер `normalizeAndValidatePhone`. Проверяет обязательный контактный телефон (очистка скобок/дефисов/пробелов, замена 8 на +7, проверка формата `^\+7\d{10}$`), минимальную длину заголовка, неотрицательный стаж (`ExperienceYears >= 0`) и минимальную цену (`MinPrice >= 0`), управляет флагом `IsActive`.
+- **`errors.go`**: `ErrProfileNotFound`, `ErrProfileAlreadyExists`, `ErrInvalidExperience`, `ErrInvalidMinPrice`, `ErrEmptyContactPhone`, `ErrInvalidPhone`, `ErrForbiddenAction`, `ErrProfileInUse`.
+- **`repository.go`**: интерфейс `Repository` (`Create`, `GetByID`, `GetByUserID`, `List`, `Update`, `Delete`).
 
 ### `internal/domain/bid` (Отклики мастеров)
 - **`entity.go`**: сущность `Bid` с предложенной ценой (`ProposedPrice`) и комментарием. Валидирует ID задачи, ID мастера, неотрицательную цену и длину комментария (минимум 5 символов).
@@ -117,8 +117,9 @@ bboard/
 - **`cancel_task.go` (`CancelTaskUseCase`)**: загружает задачу, вызывает `t.Cancel(actorID)` и сохраняет статус `canceled`.
 
 ### `internal/usecase/master`
-- **`create_profile.go` (`CreateProfileUseCase`)**: проверяет существование пользователя, валидирует профиль через `master.NewProfile` и сохраняет его.
+- **`create_profile.go` (`CreateProfileUseCase`)**: проверяет существование пользователя, передаёт обязательный контактный телефон мастера, валидирует профиль через `master.NewProfile` и сохраняет его.
 - **`list_profiles.go` (`ListProfilesUseCase`)**: фильтрует анкеты по категории и городу, возвращая только профили с `IsActive=true`.
+- **`delete_profile.go` (`DeleteProfileUseCase`)**: проверяет существование анкеты мастера и принадлежность вызывающему пользователю (`profile.UserID == input.ActorID`, иначе `ErrForbiddenAction`), после чего вызывает `masterRepo.Delete`.
 
 ### `internal/usecase/bid`
 - **`create_bid.go` (`CreateBidUseCase`)**: проверяет наличие активной анкеты мастера у пользователя, статус задачи (`open`) и отсутствие самоотклика; сохраняет отклик в `bidRepo`.
@@ -128,11 +129,11 @@ bboard/
 
 ## 4. Слой Хранения — `internal/repository/postgres` (Infrastructure)
 
-Реализует интерфейсы из `internal/domain/` на базе `pgxpool` (`pgx/v5`), маппит строки БД в доменные сущности и преобразует SQL-ошибки (например, `SQLSTATE 23505` — нарушение уникальности) в доменные ошибки.
+Реализует интерфейсы из `internal/domain/` на базе `pgxpool` (`pgx/v5`), маппит строки БД в доменные сущности и преобразует SQL-ошибки (например, `SQLSTATE 23505` — нарушение уникальности, `SQLSTATE 23503` — нарушение внешнего ключа) в доменные ошибки.
 
 - **`user_repo.go` (`UserRepo`)**: `INSERT` и `SELECT` по `id` и `email` в таблице `users`.
 - **`task_repo.go` (`TaskRepo`)**: работа с таблицей `tasks`, поддержка nullable-колонки `master_id (*int64)` и динамическое построение `WHERE` для фильтров.
-- **`master_repo.go` (`MasterRepo`)**: работа с таблицей `master_profiles`, поиск по `user_id` и выборка каталога с сортировкой по опыту.
+- **`master_repo.go` (`MasterRepo`)**: работа с таблицей `master_profiles`, поиск по `user_id`, выборка каталога с сортировкой по опыту и удаление анкеты `Delete(ctx, id)` с перехватом `SQLSTATE 23503` в `master.ErrProfileInUse`.
 - **`bid_repo.go` (`BidRepo`)**: запись откликов в `task_bids` (с проверкой уникальности пары `task_id + master_id`) и выборка откликов по задаче.
 
 ---
@@ -147,7 +148,7 @@ bboard/
 - **`response.go`**: хелпер `writeJSON` с заголовком `Content-Type: application/json` и единым форматом `errorResponse`.
 - **`auth_handler.go`**: регистрация и вход (использует `MaxBytesReader` и `DisallowUnknownFields`).
 - **`task_handler.go`**: `POST /tasks`, `GET /tasks`, `POST /tasks/{id}/assign`, `/complete`, `/cancel`. Район (`district`) отдаётся всем, а `contact_phone` и `work_address` — только автору и назначенному мастеру в статусах `in_progress`/`completed`. Маппит доменные ошибки в HTTP-коды (`400`, `403`, `404`, `409`).
-- **`master_handler.go`**: `POST /api/v1/masters` и `GET /api/v1/masters`.
+- **`master_handler.go`**: `POST /api/v1/masters`, `GET /api/v1/masters` и `DELETE /api/v1/masters/{id}`. Маппит доменные ошибки валидации телефона (`ErrEmptyContactPhone`, `ErrInvalidPhone`) в HTTP 400, `ErrForbiddenAction` в HTTP 403, `ErrProfileNotFound` в HTTP 404, `ErrProfileInUse` в HTTP 409.
 - **`bid_handler.go`**: `POST /api/v1/tasks/{id}/bids` и `GET /api/v1/tasks/{id}/bids`.
 
 ---

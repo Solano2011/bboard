@@ -18,4 +18,5 @@ type Repository interface {
 	GetByUserID(ctx context.Context, userID int64) (*Profile, error)
 	List(ctx context.Context, filter ListFilter) ([]*Profile, error)
 	Update(ctx context.Context, p *Profile) error
+	Delete(ctx context.Context, id int64) error
 }
