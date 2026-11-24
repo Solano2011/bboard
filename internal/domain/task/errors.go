@@ -1,4 +1,4 @@
-﻿package task
+package task
 
 import "errors"
 
@@ -11,6 +11,9 @@ var (
 	ErrInvalidBudget    = errors.New("task budget cannot be negative")
 	ErrInvalidAuthor    = errors.New("task author id must be positive")
 	ErrInvalidStatus    = errors.New("invalid task status transition")
+	ErrDistrictTooLong  = errors.New("district must not exceed 100 characters")
+	ErrInvalidPhone     = errors.New("invalid contact phone format, expected +7XXXXXXXXXX")
+	ErrAddressTooLong   = errors.New("work address must not exceed 255 characters")
 
 	// Ошибки состояния и прав
 	ErrTaskNotFound    = errors.New("task not found")

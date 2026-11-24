@@ -11,7 +11,7 @@ var (
 	ErrEmptyCategory     = errors.New("master category cannot be empty")
 	ErrInvalidExperience = errors.New("experience years cannot be negative")
 	ErrInvalidMinPrice   = errors.New("minimum price cannot be negative")
-
+	ErrEmptyContactPhone = errors.New("master contact phone cannot be empty")
 	// Ошибки состояния и прав
 	ErrProfileNotFound      = errors.New("master profile not found")
 	ErrProfileAlreadyExists = errors.New("user already has a master profile")

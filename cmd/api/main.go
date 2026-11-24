@@ -79,9 +79,10 @@ func main() {
 	listBidsUC := bid.NewListBidsUseCase(bidRepo, taskRepo, log)
 
 	// 7. Собираем слой доставки (Delivery / HTTP)
+	// 7. Собираем слой доставки (Delivery / HTTP)
 	authHandler := deliveryHTTP.NewAuthHandler(registerUC, loginUC, log)
 	taskHandler := deliveryHTTP.NewTaskHandler(createTaskUC, listTasksUC, assignMasterUC, completeTaskUC, cancelTaskUC, log)
-	masterHandler := deliveryHTTP.NewMasterHandler(createMasterUC, listMastersUC, log)
+	masterHandler := deliveryHTTP.NewMasterHandler(createMasterUC, listMastersUC, masterRepo, log)
 	bidHandler := deliveryHTTP.NewBidHandler(createBidUC, listBidsUC, log)
 	router := deliveryHTTP.NewRouter(authHandler, taskHandler, masterHandler, bidHandler, jwtManager, log)
 

@@ -19,6 +19,7 @@ func NewRouter(
 ) http.Handler {
 	mux := http.NewServeMux()
 	authMW := middleware.Auth(tokenParser, log)
+	optAuthMW := middleware.OptionalAuth(tokenParser, log)
 
 	// Проверка работоспособности сервера (Healthcheck)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -40,8 +41,8 @@ func NewRouter(
 	})
 	mux.Handle("GET /api/v1/auth/me", authMW(meHandler))
 
-	// Публичный просмотр объявлений и защищённые действия с задачами
-	mux.HandleFunc("GET /api/v1/tasks", taskHandler.List)
+	// Публичный просмотр объявлений (с опциональной авторизацией) и защищённые действия с задачами
+	mux.Handle("GET /api/v1/tasks", optAuthMW(http.HandlerFunc(taskHandler.List)))
 	mux.Handle("POST /api/v1/tasks", authMW(http.HandlerFunc(taskHandler.Create)))
 	mux.Handle("POST /api/v1/tasks/{id}/assign", authMW(http.HandlerFunc(taskHandler.AssignMaster)))
 	mux.Handle("POST /api/v1/tasks/{id}/complete", authMW(http.HandlerFunc(taskHandler.Complete)))
@@ -53,6 +54,7 @@ func NewRouter(
 
 	// Публичный каталог мастеров и создание анкеты
 	mux.HandleFunc("GET /api/v1/masters", masterHandler.List)
+	mux.HandleFunc("GET /api/v1/masters/{id}", masterHandler.GetByID)
 	mux.Handle("POST /api/v1/masters", authMW(http.HandlerFunc(masterHandler.Create)))
 
 	mux.Handle("/", http.FileServer(http.Dir("web")))

@@ -15,24 +15,28 @@ import (
 )
 
 type MasterHandler struct {
-	createUC *masterUC.CreateProfileUseCase
-	listUC   *masterUC.ListProfilesUseCase
-	log      *logrus.Entry
+	createUC   *masterUC.CreateProfileUseCase
+	listUC     *masterUC.ListProfilesUseCase
+	masterRepo master.Repository
+	log        *logrus.Entry
 }
 
 func NewMasterHandler(
 	createUC *masterUC.CreateProfileUseCase,
 	listUC *masterUC.ListProfilesUseCase,
+	masterRepo master.Repository,
 	log *logrus.Logger,
 ) *MasterHandler {
 	return &MasterHandler{
-		createUC: createUC,
-		listUC:   listUC,
-		log:      log.WithField("handler", "master"),
+		createUC:   createUC,
+		listUC:     listUC,
+		masterRepo: masterRepo,
+		log:        log.WithField("handler", "master"),
 	}
 }
 
 type createMasterProfileRequest struct {
+	ContactPhone    string `json:"contact_phone"`
 	Headline        string `json:"headline"`
 	Bio             string `json:"bio"`
 	Category        string `json:"category"`
@@ -44,6 +48,8 @@ type createMasterProfileRequest struct {
 type masterProfileResponse struct {
 	ID              int64     `json:"id"`
 	UserID          int64     `json:"user_id"`
+	MasterName      string    `json:"master_name"`
+	ContactPhone    string    `json:"contact_phone"`
 	Headline        string    `json:"headline"`
 	Bio             string    `json:"bio"`
 	Category        string    `json:"category"`
@@ -55,7 +61,6 @@ type masterProfileResponse struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
-// Create обрабатывает POST /api/v1/masters (требует JWT).
 func (h *MasterHandler) Create(w http.ResponseWriter, r *http.Request) {
 	userID, ok := middleware.UserIDFromContext(r.Context())
 	if !ok {
@@ -77,6 +82,7 @@ func (h *MasterHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	created, err := h.createUC.Execute(r.Context(), masterUC.CreateProfileInput{
 		UserID:          userID,
+		ContactPhone:    req.ContactPhone,
 		Headline:        req.Headline,
 		Bio:             req.Bio,
 		Category:        req.Category,
@@ -92,7 +98,6 @@ func (h *MasterHandler) Create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, mapMasterToResponse(created))
 }
 
-// List обрабатывает GET /api/v1/masters (публичный каталог мастеров).
 func (h *MasterHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
@@ -117,10 +122,29 @@ func (h *MasterHandler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// GetByID обрабатывает GET /api/v1/masters/{id} (детальная карточка мастера).
+func (h *MasterHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid master id in path"})
+		return
+	}
+
+	profile, err := h.masterRepo.GetByID(r.Context(), id)
+	if err != nil {
+		h.handleDomainError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, mapMasterToResponse(profile))
+}
+
 func mapMasterToResponse(p *master.Profile) masterProfileResponse {
 	return masterProfileResponse{
 		ID:              p.ID,
 		UserID:          p.UserID,
+		MasterName:      p.MasterName,
+		ContactPhone:    p.ContactPhone,
 		Headline:        p.Headline,
 		Bio:             p.Bio,
 		Category:        p.Category,
@@ -136,6 +160,7 @@ func mapMasterToResponse(p *master.Profile) masterProfileResponse {
 func (h *MasterHandler) handleDomainError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, master.ErrInvalidUserID),
+		errors.Is(err, master.ErrEmptyContactPhone),
 		errors.Is(err, master.ErrEmptyHeadline),
 		errors.Is(err, master.ErrHeadlineTooShort),
 		errors.Is(err, master.ErrEmptyBio),

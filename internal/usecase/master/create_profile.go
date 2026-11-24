@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"bboard/internal/domain/master"
 	"bboard/internal/domain/user"
@@ -13,6 +14,7 @@ import (
 
 type CreateProfileInput struct {
 	UserID          int64
+	ContactPhone    string
 	Headline        string
 	Bio             string
 	Category        string
@@ -45,15 +47,22 @@ func (uc *CreateProfileUseCase) Execute(ctx context.Context, input CreateProfile
 		"category": input.Category,
 	})
 
-	if _, err := uc.userRepo.GetByID(ctx, input.UserID); err != nil {
+	u, err := uc.userRepo.GetByID(ctx, input.UserID)
+	if err != nil {
 		if errors.Is(err, user.ErrUserNotFound) {
 			return nil, master.ErrInvalidUserID
 		}
 		return nil, fmt.Errorf("verify user: %w", err)
 	}
 
+	phone := strings.TrimSpace(input.ContactPhone)
+	if phone == "" {
+		phone = u.Phone
+	}
+
 	profile, err := master.NewProfile(
 		input.UserID,
+		phone,
 		input.Headline,
 		input.Bio,
 		input.Category,
@@ -75,6 +84,7 @@ func (uc *CreateProfileUseCase) Execute(ctx context.Context, input CreateProfile
 		return nil, fmt.Errorf("create master profile: %w", err)
 	}
 
+	profile.MasterName = u.Name
 	log.WithField("profile_id", profile.ID).Info("master profile created")
 	return profile, nil
 }

@@ -9,6 +9,8 @@ import (
 type Profile struct {
 	ID              int64
 	UserID          int64
+	MasterName      string // Имя из таблицы users (заполняется при чтении)
+	ContactPhone    string // Рабочий телефон для связи с заказчиками
 	Headline        string // Например: "Электромонтажные работы любой сложности"
 	Bio             string // Подробное описание услуг, инструмента, условий
 	Category        string // Основная специализация: "electric", "plumbing", "earthworks", "repair"
@@ -23,6 +25,7 @@ type Profile struct {
 // NewProfile создаёт и валидирует новую анкету мастера.
 func NewProfile(
 	userID int64,
+	contactPhone string,
 	headline string,
 	bio string,
 	category string,
@@ -32,6 +35,11 @@ func NewProfile(
 ) (*Profile, error) {
 	if userID <= 0 {
 		return nil, ErrInvalidUserID
+	}
+
+	contactPhone = strings.TrimSpace(contactPhone)
+	if contactPhone == "" {
+		return nil, ErrEmptyContactPhone
 	}
 
 	headline = strings.TrimSpace(headline)
@@ -55,7 +63,6 @@ func NewProfile(
 	if experienceYears < 0 {
 		return nil, ErrInvalidExperience
 	}
-
 	if minPrice < 0 {
 		return nil, ErrInvalidMinPrice
 	}
@@ -64,6 +71,7 @@ func NewProfile(
 
 	return &Profile{
 		UserID:          userID,
+		ContactPhone:    contactPhone,
 		Headline:        headline,
 		Bio:             bio,
 		Category:        category,
@@ -79,6 +87,7 @@ func NewProfile(
 // Update обновляет данные анкеты мастера с проверкой прав владельца.
 func (p *Profile) Update(
 	actorID int64,
+	contactPhone string,
 	headline string,
 	bio string,
 	category string,
@@ -89,6 +98,11 @@ func (p *Profile) Update(
 ) error {
 	if p.UserID != actorID {
 		return ErrForbiddenAction
+	}
+
+	contactPhone = strings.TrimSpace(contactPhone)
+	if contactPhone == "" {
+		return ErrEmptyContactPhone
 	}
 
 	headline = strings.TrimSpace(headline)
@@ -116,6 +130,7 @@ func (p *Profile) Update(
 		return ErrInvalidMinPrice
 	}
 
+	p.ContactPhone = contactPhone
 	p.Headline = headline
 	p.Bio = bio
 	p.Category = category

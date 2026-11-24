@@ -62,6 +62,37 @@ func Auth(parser TokenParser, log *logrus.Logger) func(http.Handler) http.Handle
 	}
 }
 
+// OptionalAuth извлекает userID из Bearer-токена, если он передан, но не блокирует запрос при отсутствии или невалидности токена.
+func OptionalAuth(parser TokenParser, log *logrus.Logger) func(http.Handler) http.Handler {
+	entry := log.WithField("middleware", "optional_auth")
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			authHeader := r.Header.Get("Authorization")
+			if authHeader == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			parts := strings.SplitN(authHeader, " ", 2)
+			if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || strings.TrimSpace(parts[1]) == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			userID, err := parser.ParseToken(strings.TrimSpace(parts[1]))
+			if err != nil {
+				entry.WithError(err).Debug("optional auth: token invalid or expired, proceeding as guest")
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			ctx := context.WithValue(r.Context(), userIDContextKey, userID)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
 // UserIDFromContext извлекает ID авторизованного пользователя из контекста запроса.
 // Возвращает (userID, true), если пользователь авторизован, или (0, false) в противном случае.
 func UserIDFromContext(ctx context.Context) (int64, bool) {

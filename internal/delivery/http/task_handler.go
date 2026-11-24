@@ -1,4 +1,4 @@
-﻿package http
+package http
 
 import (
 	"encoding/json"
@@ -44,11 +44,14 @@ func NewTaskHandler(
 }
 
 type createTaskRequest struct {
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Category    string `json:"category"`
-	City        string `json:"city"`
-	Budget      int64  `json:"budget"`
+	Title        string `json:"title"`
+	Description  string `json:"description"`
+	Category     string `json:"category"`
+	City         string `json:"city"`
+	District     string `json:"district"`
+	ContactPhone string `json:"contact_phone"`
+	WorkAddress  string `json:"work_address"`
+	Budget       int64  `json:"budget"`
 }
 
 type assignMasterRequest struct {
@@ -56,17 +59,20 @@ type assignMasterRequest struct {
 }
 
 type taskResponse struct {
-	ID          int64       `json:"id"`
-	AuthorID    int64       `json:"author_id"`
-	MasterID    *int64      `json:"master_id,omitempty"`
-	Title       string      `json:"title"`
-	Description string      `json:"description"`
-	Category    string      `json:"category"`
-	City        string      `json:"city,omitempty"`
-	Budget      int64       `json:"budget"`
-	Status      task.Status `json:"status"`
-	CreatedAt   time.Time   `json:"created_at"`
-	UpdatedAt   time.Time   `json:"updated_at"`
+	ID           int64       `json:"id"`
+	AuthorID     int64       `json:"author_id"`
+	MasterID     *int64      `json:"master_id,omitempty"`
+	Title        string      `json:"title"`
+	Description  string      `json:"description"`
+	Category     string      `json:"category"`
+	City         string      `json:"city,omitempty"`
+	District     string      `json:"district,omitempty"`
+	ContactPhone string      `json:"contact_phone"`
+	WorkAddress  string      `json:"work_address"`
+	Budget       int64       `json:"budget"`
+	Status       task.Status `json:"status"`
+	CreatedAt    time.Time   `json:"created_at"`
+	UpdatedAt    time.Time   `json:"updated_at"`
 }
 
 // Create обрабатывает POST /api/v1/tasks.
@@ -90,19 +96,22 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	created, err := h.createUC.Execute(r.Context(), taskUC.CreateTaskInput{
-		AuthorID:    authorID,
-		Title:       req.Title,
-		Description: req.Description,
-		Category:    req.Category,
-		City:        req.City,
-		Budget:      req.Budget,
+		AuthorID:     authorID,
+		Title:        req.Title,
+		Description:  req.Description,
+		Category:     req.Category,
+		City:         req.City,
+		District:     req.District,
+		ContactPhone: req.ContactPhone,
+		WorkAddress:  req.WorkAddress,
+		Budget:       req.Budget,
 	})
 	if err != nil {
 		h.handleDomainError(w, err)
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, mapTaskToResponse(created))
+	writeJSON(w, http.StatusCreated, mapTaskToResponse(created, authorID))
 }
 
 // List обрабатывает GET /api/v1/tasks.
@@ -123,9 +132,10 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	currentUserID, _ := middleware.UserIDFromContext(r.Context())
 	resp := make([]taskResponse, 0, len(tasks))
 	for _, t := range tasks {
-		resp = append(resp, mapTaskToResponse(t))
+		resp = append(resp, mapTaskToResponse(t, currentUserID))
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -167,7 +177,7 @@ func (h *TaskHandler) AssignMaster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, mapTaskToResponse(updated))
+	writeJSON(w, http.StatusOK, mapTaskToResponse(updated, actorID))
 }
 
 // Complete обрабатывает POST /api/v1/tasks/{id}/complete.
@@ -193,7 +203,7 @@ func (h *TaskHandler) Complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, mapTaskToResponse(updated))
+	writeJSON(w, http.StatusOK, mapTaskToResponse(updated, actorID))
 }
 
 // Cancel обрабатывает POST /api/v1/tasks/{id}/cancel.
@@ -219,11 +229,11 @@ func (h *TaskHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, mapTaskToResponse(updated))
+	writeJSON(w, http.StatusOK, mapTaskToResponse(updated, actorID))
 }
 
-func mapTaskToResponse(t *task.Task) taskResponse {
-	return taskResponse{
+func mapTaskToResponse(t *task.Task, currentUserID int64) taskResponse {
+	resp := taskResponse{
 		ID:          t.ID,
 		AuthorID:    t.AuthorID,
 		MasterID:    t.MasterID,
@@ -231,11 +241,28 @@ func mapTaskToResponse(t *task.Task) taskResponse {
 		Description: t.Description,
 		Category:    t.Category,
 		City:        t.City,
+		District:    t.District,
 		Budget:      t.Budget,
 		Status:      t.Status,
 		CreatedAt:   t.CreatedAt,
 		UpdatedAt:   t.UpdatedAt,
 	}
+
+	// Телефон (contact_phone) и точный адрес (work_address) должны передаваться в JSON-ответе
+	// только автору объявления (AuthorID) и назначенному мастеру (MasterID)
+	// (после подтверждения выбора мастера и перевода задачи в in_progress/completed).
+	isAuthor := currentUserID > 0 && currentUserID == t.AuthorID
+	isAssignedMaster := currentUserID > 0 &&
+		t.MasterID != nil &&
+		*t.MasterID == currentUserID &&
+		(t.Status == task.StatusInProgress || t.Status == task.StatusCompleted)
+
+	if isAuthor || isAssignedMaster {
+		resp.ContactPhone = t.ContactPhone
+		resp.WorkAddress = t.WorkAddress
+	}
+
+	return resp
 }
 
 func (h *TaskHandler) handleDomainError(w http.ResponseWriter, err error) {
@@ -247,7 +274,10 @@ func (h *TaskHandler) handleDomainError(w http.ResponseWriter, err error) {
 		errors.Is(err, task.ErrInvalidBudget),
 		errors.Is(err, task.ErrInvalidAuthor),
 		errors.Is(err, task.ErrInvalidMaster),
-		errors.Is(err, task.ErrSelfAssignment):
+		errors.Is(err, task.ErrSelfAssignment),
+		errors.Is(err, task.ErrDistrictTooLong),
+		errors.Is(err, task.ErrInvalidPhone),
+		errors.Is(err, task.ErrAddressTooLong):
 		writeJSON(w, http.StatusBadRequest, errorResponse{Error: err.Error()})
 
 	case errors.Is(err, task.ErrForbiddenAction):

@@ -155,6 +155,18 @@ function openCreateTaskModal() {
         </select>
       </div>
       <div class="form-group"><label>Город</label><input class="input" name="city" value="Астрахань" required /></div>
+      <div class="form-group"><label>Район (необязательно)</label><input class="input" name="district" placeholder="Например: Советский" /></div>
+      <div class="form-group">
+        <label>Контактный телефон (необязательно)</label>
+        <input class="input" name="contact_phone" placeholder="+79991234567" />
+      </div>
+      <div class="form-group">
+        <label>Точный адрес (необязательно)</label>
+        <input class="input" name="work_address" placeholder="Улица, дом, квартира" />
+        <small style="color:var(--text-muted); font-size:12px; display:block; margin-top:4px;">
+          Адрес и телефон увидит только выбранный мастер
+        </small>
+      </div>
       <div class="form-group"><label>Бюджет (₽)</label><input class="input" type="number" name="budget" value="3000" min="0" required /></div>
       <div class="form-group"><label>Подробное описание</label><textarea class="textarea" name="description" rows="3" required></textarea></div>
       <button class="btn btn-primary" style="width:100%" type="submit">Опубликовать</button>
@@ -165,11 +177,28 @@ function openCreateTaskModal() {
   document.getElementById("createTaskForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
+
+    let contactPhone = (fd.get("contact_phone") || "").trim();
+    if (contactPhone) {
+      let cleaned = contactPhone.replace(/[\s()\-]/g, "");
+      if (cleaned.startsWith("8") && cleaned.length === 11) {
+        cleaned = "+7" + cleaned.slice(1);
+      }
+      if (!/^\+7\d{10}$/.test(cleaned)) {
+        showToast("Некорректный номер телефона. Формат: +7XXXXXXXXXX", "error");
+        return;
+      }
+      contactPhone = cleaned;
+    }
+
     try {
       await api.createTask({
         title: fd.get("title"),
         category: fd.get("category"),
         city: fd.get("city"),
+        district: (fd.get("district") || "").trim(),
+        contact_phone: contactPhone,
+        work_address: (fd.get("work_address") || "").trim(),
         budget: Number(fd.get("budget")),
         description: fd.get("description"),
       });

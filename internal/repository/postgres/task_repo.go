@@ -1,4 +1,4 @@
-﻿package postgres
+package postgres
 
 import (
 	"context"
@@ -24,14 +24,15 @@ func NewTaskRepo(pool *pgxpool.Pool) *TaskRepo {
 
 func (r *TaskRepo) Create(ctx context.Context, t *task.Task) error {
 	query := `
-		INSERT INTO tasks (author_id, master_id, title, description, category, city, budget, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO tasks (author_id, master_id, title, description, category, city, district, contact_phone, work_address, budget, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING id
 	`
 	err := r.pool.QueryRow(
 		ctx, query,
 		t.AuthorID, t.MasterID, t.Title, t.Description,
-		t.Category, t.City, t.Budget, t.Status, t.CreatedAt, t.UpdatedAt,
+		t.Category, t.City, t.District, t.ContactPhone, t.WorkAddress,
+		t.Budget, t.Status, t.CreatedAt, t.UpdatedAt,
 	).Scan(&t.ID)
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
@@ -41,14 +42,15 @@ func (r *TaskRepo) Create(ctx context.Context, t *task.Task) error {
 
 func (r *TaskRepo) GetByID(ctx context.Context, id int64) (*task.Task, error) {
 	query := `
-		SELECT id, author_id, master_id, title, description, category, city, budget, status, created_at, updated_at
+		SELECT id, author_id, master_id, title, description, category, city, district, contact_phone, work_address, budget, status, created_at, updated_at
 		FROM tasks
 		WHERE id = $1
 	`
 	var t task.Task
 	err := r.pool.QueryRow(ctx, query, id).Scan(
 		&t.ID, &t.AuthorID, &t.MasterID, &t.Title, &t.Description,
-		&t.Category, &t.City, &t.Budget, &t.Status, &t.CreatedAt, &t.UpdatedAt,
+		&t.Category, &t.City, &t.District, &t.ContactPhone, &t.WorkAddress,
+		&t.Budget, &t.Status, &t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -81,7 +83,7 @@ func (r *TaskRepo) List(ctx context.Context, filter task.ListFilter) ([]*task.Ta
 	}
 
 	query := `
-		SELECT id, author_id, master_id, title, description, category, city, budget, status, created_at, updated_at
+		SELECT id, author_id, master_id, title, description, category, city, district, contact_phone, work_address, budget, status, created_at, updated_at
 		FROM tasks
 	`
 	if len(conditions) > 0 {
@@ -101,7 +103,8 @@ func (r *TaskRepo) List(ctx context.Context, filter task.ListFilter) ([]*task.Ta
 		var t task.Task
 		if err := rows.Scan(
 			&t.ID, &t.AuthorID, &t.MasterID, &t.Title, &t.Description,
-			&t.Category, &t.City, &t.Budget, &t.Status, &t.CreatedAt, &t.UpdatedAt,
+			&t.Category, &t.City, &t.District, &t.ContactPhone, &t.WorkAddress,
+			&t.Budget, &t.Status, &t.CreatedAt, &t.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan task row: %w", err)
 		}
@@ -114,13 +117,15 @@ func (r *TaskRepo) Update(ctx context.Context, t *task.Task) error {
 	query := `
 		UPDATE tasks
 		SET master_id = $1, title = $2, description = $3, category = $4,
-		    city = $5, budget = $6, status = $7, updated_at = $8
-		WHERE id = $9
+		    city = $5, district = $6, contact_phone = $7, work_address = $8,
+		    budget = $9, status = $10, updated_at = $11
+		WHERE id = $12
 	`
 	cmdTag, err := r.pool.Exec(
 		ctx, query,
 		t.MasterID, t.Title, t.Description, t.Category,
-		t.City, t.Budget, t.Status, t.UpdatedAt, t.ID,
+		t.City, t.District, t.ContactPhone, t.WorkAddress,
+		t.Budget, t.Status, t.UpdatedAt, t.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update task: %w", err)

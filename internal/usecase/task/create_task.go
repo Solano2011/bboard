@@ -1,4 +1,4 @@
-﻿package task
+package task
 
 import (
 	"context"
@@ -13,12 +13,15 @@ import (
 
 // CreateTaskInput — входные данные для публикации нового объявления заказчика.
 type CreateTaskInput struct {
-	AuthorID    int64
-	Title       string
-	Description string
-	Category    string
-	City        string
-	Budget      int64
+	AuthorID     int64
+	Title        string
+	Description  string
+	Category     string
+	City         string
+	District     string
+	ContactPhone string
+	WorkAddress  string
+	Budget       int64
 }
 
 // CreateTaskUseCase реализует бизнес-сценарий создания нового объявления.
@@ -65,6 +68,9 @@ func (uc *CreateTaskUseCase) Execute(ctx context.Context, input CreateTaskInput)
 		input.Description,
 		input.Category,
 		input.City,
+		input.District,
+		input.ContactPhone,
+		input.WorkAddress,
 		input.Budget,
 	)
 	if err != nil {

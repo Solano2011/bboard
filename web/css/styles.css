@@ -271,6 +271,7 @@ body {
   margin-bottom: 16px;
   display: -webkit-box;
   -webkit-line-clamp: 3;
+  line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -330,6 +331,9 @@ body {
   border-radius: var(--radius-lg);
   width: 100%;
   max-width: 480px;
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border);
   overflow: hidden;
 }
@@ -340,6 +344,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .modal-close {
@@ -352,6 +357,7 @@ body {
 
 .modal-body {
   padding: 20px;
+  overflow-y: auto;
 }
 
 .form-group {

@@ -1,0 +1,2 @@
+ALTER TABLE master_profiles
+    ADD COLUMN IF NOT EXISTS contact_phone VARCHAR(30) NOT NULL DEFAULT '';
