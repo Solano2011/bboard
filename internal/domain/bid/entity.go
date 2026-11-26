@@ -5,41 +5,40 @@ import (
 	"time"
 )
 
-// Bid представляет отклик мастера на объявление заказчика.
+// Bid представляет отклик мастера (task_responses) на объявление заказчика.
 type Bid struct {
-	ID            int64
-	TaskID        int64
-	MasterID      int64
-	ProposedPrice int64  // Предложенная мастером цена в рублях
-	Comment       string // Сопроводительный текст от мастера
-	CreatedAt     time.Time
+	ID              int64
+	TaskID          int64
+	MasterProfileID int64
+	ProposedPrice   *int64 // Опционально предложенная мастером цена в рублях
+	Comment         string // Опциональный сопроводительный текст от мастера
+	CreatedAt       time.Time
+
+	// Краткая информация о профиле мастера для списка откликов (заполняется при чтении)
+	MasterDisplayName          string
+	MasterAvatarURL            string
+	MasterRatingAvg            float64
+	MasterReviewsCount         int
+	MasterCompletedOrdersCount int
 }
 
 // NewBid создаёт и валидирует новый отклик мастера.
-func NewBid(taskID, masterID, proposedPrice int64, comment string) (*Bid, error) {
+func NewBid(taskID, masterProfileID int64, proposedPrice *int64, comment string) (*Bid, error) {
 	if taskID <= 0 {
 		return nil, ErrInvalidTaskID
 	}
-	if masterID <= 0 {
+	if masterProfileID <= 0 {
 		return nil, ErrInvalidMasterID
 	}
-	if proposedPrice < 0 {
+	if proposedPrice != nil && *proposedPrice < 0 {
 		return nil, ErrInvalidPrice
 	}
 
-	comment = strings.TrimSpace(comment)
-	if comment == "" {
-		return nil, ErrEmptyComment
-	}
-	if len([]rune(comment)) < 5 {
-		return nil, ErrCommentTooShort
-	}
-
 	return &Bid{
-		TaskID:        taskID,
-		MasterID:      masterID,
-		ProposedPrice: proposedPrice,
-		Comment:       comment,
-		CreatedAt:     time.Now().UTC(),
+		TaskID:          taskID,
+		MasterProfileID: masterProfileID,
+		ProposedPrice:   proposedPrice,
+		Comment:         strings.TrimSpace(comment),
+		CreatedAt:       time.Now().UTC(),
 	}, nil
 }

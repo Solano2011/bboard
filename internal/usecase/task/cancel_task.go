@@ -37,7 +37,7 @@ func (uc *CancelTaskUseCase) Execute(ctx context.Context, input ChangeTaskStatus
 		return nil, err
 	}
 
-	if err := uc.taskRepo.Update(ctx, t); err != nil {
+	if err := uc.taskRepo.Update(ctx, t, task.StatusOpen, task.StatusInProgress, task.StatusPendingCompletion); err != nil {
 		log.WithError(err).Error("failed to update task status to canceled")
 		return nil, fmt.Errorf("update task: %w", err)
 	}

@@ -34,22 +34,27 @@ func NewBidHandler(
 }
 
 type createBidRequest struct {
-	ProposedPrice int64  `json:"proposed_price"`
+	ProposedPrice *int64 `json:"proposed_price"`
 	Comment       string `json:"comment"`
 }
 
 type bidResponse struct {
-	ID            int64     `json:"id"`
-	TaskID        int64     `json:"task_id"`
-	MasterID      int64     `json:"master_id"`
-	ProposedPrice int64     `json:"proposed_price"`
-	Comment       string    `json:"comment"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID                         int64     `json:"id"`
+	TaskID                     int64     `json:"task_id"`
+	MasterProfileID            int64     `json:"master_profile_id"`
+	ProposedPrice              *int64    `json:"proposed_price,omitempty"`
+	Comment                    string    `json:"comment"`
+	MasterDisplayName          string    `json:"master_display_name"`
+	MasterAvatarURL            string    `json:"master_avatar_url,omitempty"`
+	MasterRatingAvg            float64   `json:"master_rating_avg"`
+	MasterReviewsCount         int       `json:"master_reviews_count"`
+	MasterCompletedOrdersCount int       `json:"master_completed_orders_count"`
+	CreatedAt                  time.Time `json:"created_at"`
 }
 
 // Create обрабатывает POST /api/v1/tasks/{id}/bids (отклик мастера на задачу).
 func (h *BidHandler) Create(w http.ResponseWriter, r *http.Request) {
-	masterID, ok := middleware.UserIDFromContext(r.Context())
+	actorUserID, ok := middleware.UserIDFromContext(r.Context())
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
 		return
@@ -68,14 +73,14 @@ func (h *BidHandler) Create(w http.ResponseWriter, r *http.Request) {
 	dec.DisallowUnknownFields()
 
 	if err := dec.Decode(&req); err != nil {
-		h.log.WithError(err).Warn("failed to decode create bid request")
+		h.log.WithError(err).Warn("failed to decode create response request")
 		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid JSON payload"})
 		return
 	}
 
 	created, err := h.createUC.Execute(r.Context(), bidUC.CreateBidInput{
 		TaskID:        taskID,
-		MasterID:      masterID,
+		ActorUserID:   actorUserID,
 		ProposedPrice: req.ProposedPrice,
 		Comment:       req.Comment,
 	})
@@ -120,12 +125,17 @@ func (h *BidHandler) ListByTask(w http.ResponseWriter, r *http.Request) {
 
 func mapBidToResponse(b *bid.Bid) bidResponse {
 	return bidResponse{
-		ID:            b.ID,
-		TaskID:        b.TaskID,
-		MasterID:      b.MasterID,
-		ProposedPrice: b.ProposedPrice,
-		Comment:       b.Comment,
-		CreatedAt:     b.CreatedAt,
+		ID:                         b.ID,
+		TaskID:                     b.TaskID,
+		MasterProfileID:            b.MasterProfileID,
+		ProposedPrice:              b.ProposedPrice,
+		Comment:                    b.Comment,
+		MasterDisplayName:          b.MasterDisplayName,
+		MasterAvatarURL:            b.MasterAvatarURL,
+		MasterRatingAvg:            b.MasterRatingAvg,
+		MasterReviewsCount:         b.MasterReviewsCount,
+		MasterCompletedOrdersCount: b.MasterCompletedOrdersCount,
+		CreatedAt:                  b.CreatedAt,
 	}
 }
 
@@ -134,8 +144,6 @@ func (h *BidHandler) handleDomainError(w http.ResponseWriter, err error) {
 	case errors.Is(err, bid.ErrInvalidTaskID),
 		errors.Is(err, bid.ErrInvalidMasterID),
 		errors.Is(err, bid.ErrInvalidPrice),
-		errors.Is(err, bid.ErrEmptyComment),
-		errors.Is(err, bid.ErrCommentTooShort),
 		errors.Is(err, bid.ErrSelfBidNotAllowed):
 		writeJSON(w, http.StatusBadRequest, errorResponse{Error: err.Error()})
 

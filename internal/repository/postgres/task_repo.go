@@ -9,6 +9,7 @@ import (
 	"bboard/internal/domain/task"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -24,31 +25,31 @@ func NewTaskRepo(pool *pgxpool.Pool) *TaskRepo {
 
 func (r *TaskRepo) Create(ctx context.Context, t *task.Task) error {
 	query := `
-		INSERT INTO tasks (author_id, master_id, title, description, category, city, district, contact_phone, work_address, budget, status, created_at, updated_at)
+		INSERT INTO tasks (author_id, assigned_master_id, title, description, category, city, district, contact_phone, work_address, budget, status, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING id
 	`
 	err := r.pool.QueryRow(
 		ctx, query,
-		t.AuthorID, t.MasterID, t.Title, t.Description,
+		t.AuthorID, t.AssignedMasterID, t.Title, t.Description,
 		t.Category, t.City, t.District, t.ContactPhone, t.WorkAddress,
 		t.Budget, t.Status, t.CreatedAt, t.UpdatedAt,
 	).Scan(&t.ID)
 	if err != nil {
-		return fmt.Errorf("insert task: %w", err)
+		return mapTaskPgError(err, "insert task")
 	}
 	return nil
 }
 
 func (r *TaskRepo) GetByID(ctx context.Context, id int64) (*task.Task, error) {
 	query := `
-		SELECT id, author_id, master_id, title, description, category, city, district, contact_phone, work_address, budget, status, created_at, updated_at
+		SELECT id, author_id, assigned_master_id, title, description, category, city, district, contact_phone, work_address, budget, status, created_at, updated_at
 		FROM tasks
 		WHERE id = $1
 	`
 	var t task.Task
 	err := r.pool.QueryRow(ctx, query, id).Scan(
-		&t.ID, &t.AuthorID, &t.MasterID, &t.Title, &t.Description,
+		&t.ID, &t.AuthorID, &t.AssignedMasterID, &t.Title, &t.Description,
 		&t.Category, &t.City, &t.District, &t.ContactPhone, &t.WorkAddress,
 		&t.Budget, &t.Status, &t.CreatedAt, &t.UpdatedAt,
 	)
@@ -83,7 +84,7 @@ func (r *TaskRepo) List(ctx context.Context, filter task.ListFilter) ([]*task.Ta
 	}
 
 	query := `
-		SELECT id, author_id, master_id, title, description, category, city, district, contact_phone, work_address, budget, status, created_at, updated_at
+		SELECT id, author_id, assigned_master_id, title, description, category, city, district, contact_phone, work_address, budget, status, created_at, updated_at
 		FROM tasks
 	`
 	if len(conditions) > 0 {
@@ -102,7 +103,7 @@ func (r *TaskRepo) List(ctx context.Context, filter task.ListFilter) ([]*task.Ta
 	for rows.Next() {
 		var t task.Task
 		if err := rows.Scan(
-			&t.ID, &t.AuthorID, &t.MasterID, &t.Title, &t.Description,
+			&t.ID, &t.AuthorID, &t.AssignedMasterID, &t.Title, &t.Description,
 			&t.Category, &t.City, &t.District, &t.ContactPhone, &t.WorkAddress,
 			&t.Budget, &t.Status, &t.CreatedAt, &t.UpdatedAt,
 		); err != nil {
@@ -113,25 +114,112 @@ func (r *TaskRepo) List(ctx context.Context, filter task.ListFilter) ([]*task.Ta
 	return result, rows.Err()
 }
 
-func (r *TaskRepo) Update(ctx context.Context, t *task.Task) error {
+func (r *TaskRepo) Update(ctx context.Context, t *task.Task, allowedPrevStatuses ...task.Status) error {
 	query := `
 		UPDATE tasks
-		SET master_id = $1, title = $2, description = $3, category = $4,
+		SET assigned_master_id = $1, title = $2, description = $3, category = $4,
 		    city = $5, district = $6, contact_phone = $7, work_address = $8,
 		    budget = $9, status = $10, updated_at = $11
 		WHERE id = $12
 	`
-	cmdTag, err := r.pool.Exec(
-		ctx, query,
-		t.MasterID, t.Title, t.Description, t.Category,
+	args := []any{
+		t.AssignedMasterID, t.Title, t.Description, t.Category,
 		t.City, t.District, t.ContactPhone, t.WorkAddress,
 		t.Budget, t.Status, t.UpdatedAt, t.ID,
-	)
+	}
+
+	if len(allowedPrevStatuses) > 0 {
+		statuses := make([]string, len(allowedPrevStatuses))
+		for i, s := range allowedPrevStatuses {
+			statuses[i] = string(s)
+		}
+		query += ` AND status = ANY($13)`
+		args = append(args, statuses)
+	}
+
+	cmdTag, err := r.pool.Exec(ctx, query, args...)
 	if err != nil {
-		return fmt.Errorf("update task: %w", err)
+		return mapTaskPgError(err, "update task")
 	}
 	if cmdTag.RowsAffected() == 0 {
+		if len(allowedPrevStatuses) > 0 {
+			var exists bool
+			if err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1)`, t.ID).Scan(&exists); err == nil && exists {
+				return task.ErrInvalidStatus
+			}
+		}
 		return task.ErrTaskNotFound
 	}
 	return nil
+}
+
+func (r *TaskRepo) CompleteAndIncrementMasterCounter(ctx context.Context, t *task.Task) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin complete task tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Блокируем строку задачи, чтобы исключить гонку при параллельных /complete
+	var currentStatus task.Status
+	var assignedMasterID *int64
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT status, assigned_master_id FROM tasks WHERE id = $1 FOR UPDATE`,
+		t.ID,
+	).Scan(&currentStatus, &assignedMasterID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return task.ErrTaskNotFound
+		}
+		return fmt.Errorf("lock task for completion: %w", err)
+	}
+
+	if assignedMasterID == nil {
+		return task.ErrMasterNotAssigned
+	}
+	if currentStatus != task.StatusInProgress && currentStatus != task.StatusPendingCompletion {
+		return task.ErrInvalidStatus
+	}
+
+	cmdTag, err := tx.Exec(
+		ctx,
+		`UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3 AND status IN ('in_progress', 'pending_completion')`,
+		t.Status, t.UpdatedAt, t.ID,
+	)
+	if err != nil {
+		return mapTaskPgError(err, "complete task")
+	}
+	if cmdTag.RowsAffected() == 0 {
+		return task.ErrInvalidStatus
+	}
+
+	masterTag, err := tx.Exec(
+		ctx,
+		`UPDATE master_profiles SET completed_orders_count = completed_orders_count + 1, updated_at = $1 WHERE id = $2`,
+		t.UpdatedAt, *assignedMasterID,
+	)
+	if err != nil {
+		return fmt.Errorf("increment master completed_orders_count: %w", err)
+	}
+	if masterTag.RowsAffected() == 0 {
+		return task.ErrInvalidMaster
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit complete task tx: %w", err)
+	}
+	return nil
+}
+
+func mapTaskPgError(err error, action string) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "23503":
+			return task.ErrInvalidMaster
+		case "23514":
+			return task.ErrInvalidBudget
+		}
+	}
+	return fmt.Errorf("%s: %w", action, err)
 }

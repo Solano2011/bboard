@@ -1,22 +1,79 @@
 import { api } from "./api/httpClient.js";
 import { store } from "./store/store.js";
 import { renderTaskCard } from "./components/taskCard.js";
-import { renderMasterCard } from "./components/masterCard.js";
+import { renderMasterCard, formatRating } from "./components/masterCard.js";
 import { ModalManager, showToast } from "./components/modals.js";
+import { CATEGORIES, CATEGORY_LABELS, renderCategoryOptions } from "./constants/categories.js";
 
 const modal = new ModalManager();
 api.setTokenProvider(() => store.state.token);
+api.setTokenUpdatedHandler((accessToken, user) => {
+  store.setSession(accessToken, user || store.state.user);
+});
+api.setUnauthorizedHandler(() => {
+  if (store.state.token) {
+    const wasCabinet = store.state.activeTab === "cabinet";
+    store.clearSession();
+    modal.close();
+    showToast("Сессия истекла, войдите заново", "info");
+    if (wasCabinet) {
+      loadData();
+    }
+  }
+});
+
+function escapeHtml(str) {
+  return String(str ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function normalizePhone(raw, required = false) {
+  const contactPhone = (raw || "").trim();
+  if (!contactPhone) {
+    if (required) {
+      throw new Error("Укажите контактный телефон");
+    }
+    return "";
+  }
+  let cleaned = contactPhone.replace(/[\s()\-]/g, "");
+  if (cleaned.startsWith("8") && cleaned.length === 11) {
+    cleaned = "+7" + cleaned.slice(1);
+  }
+  if (!/^\+7\d{10}$/.test(cleaned)) {
+    throw new Error("Некорректный номер телефона. Формат: +7XXXXXXXXXX");
+  }
+  return cleaned;
+}
 
 // --- Data Loaders ---
 async function loadData() {
-  const { activeTab, filters } = store.state;
+  const { activeTab, filters, user } = store.state;
   try {
     if (activeTab === "tasks") {
       const tasks = await api.listTasks(filters);
       store.setState({ tasks });
-    } else {
-      const masters = await api.listMasters({ category: filters.category, city: filters.city });
+    } else if (activeTab === "masters") {
+      const masters = await api.listMasterServices({ category: filters.category, city: filters.city });
       store.setState({ masters });
+    } else if (activeTab === "cabinet") {
+      if (!user) {
+        store.setState({ activeTab: "tasks", myProfile: null, myServices: [] });
+        return;
+      }
+      try {
+        const res = await api.getMyMasterProfile();
+        store.setState({ myProfile: res.profile, myServices: res.services || [] });
+      } catch (err) {
+        if (err.status === 404) {
+          store.setState({ myProfile: null, myServices: [] });
+        } else {
+          throw err;
+        }
+      }
     }
   } catch (err) {
     showToast(err.message, "error");
@@ -27,22 +84,34 @@ async function loadData() {
 function renderNavbar(state) {
   const navActions = document.getElementById("navActions");
   const primaryCta = document.getElementById("primaryCta");
+  const navTabCabinet = document.getElementById("navTabCabinet");
+  const filtersBar = document.querySelector(".filters");
+
+  if (navTabCabinet) {
+    navTabCabinet.style.display = state.user ? "inline-block" : "none";
+  }
 
   document.querySelectorAll(".nav-tab").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.tab === state.activeTab);
   });
 
+  if (filtersBar) {
+    filtersBar.style.display = state.activeTab === "cabinet" ? "none" : "flex";
+  }
   document.getElementById("filterStatus").style.display = state.activeTab === "tasks" ? "inline-block" : "none";
 
   if (state.user) {
     navActions.innerHTML = `
-      <span class="user-pill">👤 ${state.user.name} (ID #${state.user.id})</span>
+      <span class="user-pill">👤 ${escapeHtml(state.user.name)} (ID #${state.user.id})</span>
       <button class="btn btn-secondary btn-sm" id="btnLogout">Выйти</button>
     `;
-    primaryCta.innerHTML =
-      state.activeTab === "tasks"
-        ? `<button class="btn btn-primary" id="btnOpenCreateTask">+ Разместить заказ</button>`
-        : `<button class="btn btn-primary" id="btnOpenCreateMaster">+ Анкета мастера</button>`;
+    if (state.activeTab === "tasks") {
+      primaryCta.innerHTML = `<button class="btn btn-primary" id="btnOpenCreateTask">+ Разместить заказ</button>`;
+    } else if (state.activeTab === "masters") {
+      primaryCta.innerHTML = `<button class="btn btn-primary" id="btnGoCabinet">Мой кабинет мастера</button>`;
+    } else {
+      primaryCta.innerHTML = "";
+    }
   } else {
     navActions.innerHTML = `
       <button class="btn btn-secondary btn-sm" id="btnOpenLogin">Войти</button>
@@ -52,8 +121,143 @@ function renderNavbar(state) {
   }
 }
 
+function renderCabinet(state) {
+  const p = state.myProfile;
+  const services = state.myServices || [];
+  const activeCount = services.filter((s) => s.is_active).length;
+
+  const servicesHtml = !p
+    ? `<p style="color:var(--text-secondary); font-size:14px;">Сначала сохраните профиль мастера слева, чтобы добавлять анкеты услуг (до 3 активных).</p>`
+    : services.length
+    ? services
+        .map(
+          (s) => `
+          <div class="service-item">
+            <div class="card-top" style="margin-bottom:8px;">
+              <span class="tag">${CATEGORY_LABELS[s.category] || escapeHtml(s.category)}</span>
+              <span class="tag ${s.is_active ? "status-open" : "status-canceled"}">
+                ${s.is_active ? "Активна" : "Скрыта"}
+              </span>
+            </div>
+            <div style="font-weight:600; margin-bottom:4px;">${escapeHtml(s.title)}</div>
+            <div style="font-size:13px; color:var(--text-secondary); margin-bottom:8px;">
+              ${escapeHtml(s.experience_description || "Описание не указано")}
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+              <strong>от ${Number(s.price).toLocaleString("ru-RU")} ₽</strong>
+              <div style="display:flex; gap:8px;">
+                <button class="btn btn-secondary btn-sm" data-action="edit-service" data-service-id="${s.id}">Редактировать</button>
+                <button class="btn btn-danger-outline btn-sm" data-action="delete-service" data-service-id="${s.id}">Удалить</button>
+              </div>
+            </div>
+          </div>`
+        )
+        .join("")
+    : `<p style="color:var(--text-secondary); font-size:14px;">У вас пока нет анкет услуг. Добавьте первую!</p>`;
+
+  return `
+    <div class="cabinet-grid">
+      <section class="cabinet-panel">
+        <div class="cabinet-panel-header">
+          <h3>Профиль мастера</h3>
+          ${
+            p
+              ? `<span class="tag rating-badge">${formatRating(p.rating_avg, p.reviews_count)} • Заказов: ${p.completed_orders_count}</span>`
+              : `<span class="tag">Не создан</span>`
+          }
+        </div>
+        <form id="cabinetProfileForm">
+          <div class="form-group">
+            <label>Отображаемое имя *</label>
+            <input class="input" name="display_name" value="${escapeHtml(p?.display_name || state.user?.name || "")}" required />
+          </div>
+          <div class="form-group">
+            <label>Ссылка на аватар (http/https, необязательно)</label>
+            <input class="input" name="avatar_url" placeholder="https://..." value="${escapeHtml(p?.avatar_url || "")}" />
+          </div>
+          <div class="form-group">
+            <label>Город *</label>
+            <input class="input" name="city" value="${escapeHtml(p?.city || "Астрахань")}" required />
+          </div>
+          <div class="form-group">
+            <label>Район (необязательно)</label>
+            <input class="input" name="district" placeholder="Например: Советский" value="${escapeHtml(p?.district || "")}" />
+          </div>
+          <div class="form-group">
+            <label>Телефон для связи *</label>
+            <input class="input" name="contact_phone" placeholder="+79991234567" value="${escapeHtml(p?.contact_phone || state.user?.phone || "")}" required />
+          </div>
+          <div class="form-group">
+            <label>Telegram (необязательно)</label>
+            <input class="input" name="telegram" placeholder="@username" value="${escapeHtml(p?.telegram || "")}" />
+          </div>
+          <div class="form-group">
+            <label>О себе</label>
+            <textarea class="textarea" name="about" rows="3" placeholder="Расскажите об опыте и подходе к работе">${escapeHtml(p?.about || "")}</textarea>
+          </div>
+          <label class="switch-row">
+            <input type="checkbox" name="is_contacts_public" ${p ? (p.is_contacts_public ? "checked" : "") : "checked"} />
+            <span>Показывать мои контакты всем пользователям (иначе видны только после назначения на заказ)</span>
+          </label>
+          <button class="btn btn-primary" style="width:100%" type="submit">
+            ${p ? "Сохранить профиль" : "Создать профиль мастера"}
+          </button>
+        </form>
+      </section>
+
+      <section class="cabinet-panel">
+        <div class="cabinet-panel-header">
+          <h3>Мои анкеты услуг (${activeCount} из 3)</h3>
+          ${
+            p
+              ? `<button class="btn btn-primary btn-sm" id="btnAddService" ${activeCount >= 3 ? "disabled" : ""}>+ Добавить услугу</button>`
+              : ""
+          }
+        </div>
+        ${servicesHtml}
+      </section>
+    </div>
+  `;
+}
+
 function renderGrid(state) {
   const grid = document.getElementById("contentGrid");
+
+  if (state.activeTab === "cabinet") {
+    grid.innerHTML = renderCabinet(state);
+    const profileForm = document.getElementById("cabinetProfileForm");
+    if (profileForm) {
+      profileForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        let contactPhone = "";
+        try {
+          contactPhone = normalizePhone(fd.get("contact_phone"), true);
+        } catch (validationErr) {
+          showToast(validationErr.message, "error");
+          return;
+        }
+
+        try {
+          await api.upsertMyMasterProfile({
+            display_name: fd.get("display_name"),
+            avatar_url: (fd.get("avatar_url") || "").trim(),
+            city: fd.get("city"),
+            district: (fd.get("district") || "").trim(),
+            contact_phone: contactPhone,
+            telegram: (fd.get("telegram") || "").trim(),
+            about: fd.get("about"),
+            is_contacts_public: fd.get("is_contacts_public") === "on",
+          });
+          showToast("Профиль мастера сохранён!", "success");
+          loadData();
+        } catch (err) {
+          showToast(err.message, "error");
+        }
+      });
+    }
+    return;
+  }
 
   if (state.activeTab === "tasks") {
     if (!state.tasks.length) {
@@ -63,10 +267,10 @@ function renderGrid(state) {
     grid.innerHTML = state.tasks.map((t) => renderTaskCard(t, state.user)).join("");
   } else {
     if (!state.masters.length) {
-      grid.innerHTML = `<div class="empty-state">Анкет мастеров по выбранным фильтрам пока нет</div>`;
+      grid.innerHTML = `<div class="empty-state">Анкет услуг по выбранным фильтрам пока нет</div>`;
       return;
     }
-    grid.innerHTML = state.masters.map((m) => renderMasterCard(m, state.user)).join("");
+    grid.innerHTML = state.masters.map((m) => renderMasterCard(m)).join("");
   }
 }
 
@@ -117,7 +321,7 @@ function openRegisterModal() {
       <div class="form-group"><label>Имя</label><input class="input" name="name" required /></div>
       <div class="form-group"><label>Email</label><input class="input" type="email" name="email" required /></div>
       <div class="form-group"><label>Телефон</label><input class="input" name="phone" placeholder="+79990000000" /></div>
-      <div class="form-group"><label>Пароль (от 6 символов)</label><input class="input" type="password" name="password" required /></div>
+      <div class="form-group"><label>Пароль (от 8 символов)</label><input class="input" type="password" name="password" required /></div>
       <button class="btn btn-primary" style="width:100%" type="submit">Создать аккаунт</button>
     </form>
   `
@@ -127,8 +331,7 @@ function openRegisterModal() {
     e.preventDefault();
     const fd = new FormData(e.target);
     try {
-      await api.register(Object.fromEntries(fd.entries()));
-      const res = await api.login(fd.get("email"), fd.get("password"));
+      const res = await api.register(Object.fromEntries(fd.entries()));
       store.setSession(res.access_token, res.user);
       modal.close();
       showToast("Аккаунт создан!", "success");
@@ -139,71 +342,71 @@ function openRegisterModal() {
   });
 }
 
-function openCreateTaskModal() {
+function openTaskFormModal(existingTask = null) {
+  const isEdit = Boolean(existingTask);
   modal.open(
-    "Новое объявление заказчика",
+    isEdit ? "Редактировать объявление" : "Новое объявление заказчика",
     `
-    <form id="createTaskForm">
-      <div class="form-group"><label>Заголовок</label><input class="input" name="title" placeholder="Например: Выкопать яму под септик" required /></div>
+    <form id="taskForm">
+      <div class="form-group"><label>Заголовок</label><input class="input" name="title" placeholder="Например: Выкопать яму под септик" value="${isEdit ? escapeHtml(existingTask.title) : ""}" required /></div>
       <div class="form-group">
         <label>Категория</label>
         <select class="input" name="category">
-          <option value="electric">Электрика</option>
-          <option value="plumbing">Сантехника</option>
-          <option value="earthworks">Земляные работы</option>
-          <option value="repair">Ремонт и отделка</option>
+          ${renderCategoryOptions(false, isEdit ? existingTask.category : "")}
         </select>
       </div>
-      <div class="form-group"><label>Город</label><input class="input" name="city" value="Астрахань" required /></div>
-      <div class="form-group"><label>Район (необязательно)</label><input class="input" name="district" placeholder="Например: Советский" /></div>
+      <div class="form-group"><label>Город</label><input class="input" name="city" value="${isEdit ? escapeHtml(existingTask.city || "") : "Астрахань"}" required /></div>
+      <div class="form-group"><label>Район (необязательно)</label><input class="input" name="district" placeholder="Например: Советский" value="${isEdit ? escapeHtml(existingTask.district || "") : ""}" /></div>
       <div class="form-group">
         <label>Контактный телефон (необязательно)</label>
-        <input class="input" name="contact_phone" placeholder="+79991234567" />
+        <input class="input" name="contact_phone" placeholder="+79991234567" value="${isEdit ? escapeHtml(existingTask.contact_phone || "") : ""}" />
       </div>
       <div class="form-group">
         <label>Точный адрес (необязательно)</label>
-        <input class="input" name="work_address" placeholder="Улица, дом, квартира" />
+        <input class="input" name="work_address" placeholder="Улица, дом, квартира" value="${isEdit ? escapeHtml(existingTask.work_address || "") : ""}" />
         <small style="color:var(--text-muted); font-size:12px; display:block; margin-top:4px;">
           Адрес и телефон увидит только выбранный мастер
         </small>
       </div>
-      <div class="form-group"><label>Бюджет (₽)</label><input class="input" type="number" name="budget" value="3000" min="0" required /></div>
-      <div class="form-group"><label>Подробное описание</label><textarea class="textarea" name="description" rows="3" required></textarea></div>
-      <button class="btn btn-primary" style="width:100%" type="submit">Опубликовать</button>
+      <div class="form-group"><label>Бюджет (₽)</label><input class="input" type="number" name="budget" value="${isEdit ? Number(existingTask.budget) : 3000}" min="0" required /></div>
+      <div class="form-group"><label>Подробное описание</label><textarea class="textarea" name="description" rows="3" required>${isEdit ? escapeHtml(existingTask.description) : ""}</textarea></div>
+      <button class="btn btn-primary" style="width:100%" type="submit">${isEdit ? "Сохранить изменения" : "Опубликовать"}</button>
     </form>
   `
   );
 
-  document.getElementById("createTaskForm").addEventListener("submit", async (e) => {
+  document.getElementById("taskForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
 
-    let contactPhone = (fd.get("contact_phone") || "").trim();
-    if (contactPhone) {
-      let cleaned = contactPhone.replace(/[\s()\-]/g, "");
-      if (cleaned.startsWith("8") && cleaned.length === 11) {
-        cleaned = "+7" + cleaned.slice(1);
-      }
-      if (!/^\+7\d{10}$/.test(cleaned)) {
-        showToast("Некорректный номер телефона. Формат: +7XXXXXXXXXX", "error");
-        return;
-      }
-      contactPhone = cleaned;
+    let contactPhone = "";
+    try {
+      contactPhone = normalizePhone(fd.get("contact_phone"), false);
+    } catch (validationErr) {
+      showToast(validationErr.message, "error");
+      return;
     }
 
+    const payload = {
+      title: fd.get("title"),
+      category: fd.get("category"),
+      city: fd.get("city"),
+      district: (fd.get("district") || "").trim(),
+      contact_phone: contactPhone,
+      work_address: (fd.get("work_address") || "").trim(),
+      budget: Number(fd.get("budget")),
+      description: fd.get("description"),
+    };
+
     try {
-      await api.createTask({
-        title: fd.get("title"),
-        category: fd.get("category"),
-        city: fd.get("city"),
-        district: (fd.get("district") || "").trim(),
-        contact_phone: contactPhone,
-        work_address: (fd.get("work_address") || "").trim(),
-        budget: Number(fd.get("budget")),
-        description: fd.get("description"),
-      });
+      if (isEdit) {
+        await api.updateTask(existingTask.id, payload);
+        showToast("Объявление обновлено!", "success");
+      } else {
+        await api.createTask(payload);
+        showToast("Объявление опубликовано!", "success");
+      }
       modal.close();
-      showToast("Объявление опубликовано!", "success");
       loadData();
     } catch (err) {
       showToast(err.message, "error");
@@ -211,70 +414,177 @@ function openCreateTaskModal() {
   });
 }
 
-function openCreateMasterModal() {
+function openServiceFormModal(existingService = null) {
+  const isEdit = Boolean(existingService);
+  const takenCategories = new Set(
+    (store.state.myServices || [])
+      .filter((s) => s.is_active && (!isEdit || s.id !== existingService.id))
+      .map((s) => s.category)
+  );
+
+  const selectedCategory = isEdit
+    ? existingService.category
+    : CATEGORIES.find((c) => !takenCategories.has(c.value))?.value || "";
+
+  const categoryOptionsHtml = CATEGORIES.map(({ value, label }) => {
+    const isTaken = takenCategories.has(value);
+    const isSelected = value === selectedCategory;
+    const isDisabled = isTaken && !(isEdit && isSelected);
+    return `<option value="${value}"${isSelected ? " selected" : ""}${isDisabled ? " disabled" : ""}>${label}${isTaken ? " (уже есть активная)" : ""}</option>`;
+  }).join("");
+
   modal.open(
-    "Создать анкету мастера",
+    isEdit ? "Редактировать анкету услуги" : "Новая анкета услуги",
     `
-    <form id="createMasterForm">
-      <div class="form-group"><label>Заголовок услуги</label><input class="input" name="headline" placeholder="Частный электрик, монтаж под ключ" required /></div>
+    <form id="serviceForm">
       <div class="form-group">
-        <label>Телефон для связи *</label>
-        <input class="input" name="contact_phone" placeholder="+79991234567" required />
-      </div>
-      <div class="form-group">
-        <label>Специализация</label>
-        <select class="input" name="category">
-          <option value="electric">Электрика</option>
-          <option value="plumbing">Сантехника</option>
-          <option value="earthworks">Земляные работы</option>
-          <option value="repair">Ремонт и отделка</option>
+        <label>Категория *</label>
+        <select class="input" name="category" required>
+          ${categoryOptionsHtml}
         </select>
       </div>
-      <div class="form-group"><label>Город</label><input class="input" name="city" value="Астрахань" required /></div>
-      <div class="form-group"><label>Опыт работы (лет)</label><input class="input" type="number" name="experience_years" value="5" min="0" required /></div>
-      <div class="form-group"><label>Минимальная цена выезда (₽)</label><input class="input" type="number" name="min_price" value="1500" min="0" required /></div>
-      <div class="form-group"><label>О себе и инструменте</label><textarea class="textarea" name="bio" rows="3" required></textarea></div>
-      <button class="btn btn-primary" style="width:100%" type="submit">Сохранить анкету</button>
+      <div class="form-group">
+        <label>Заголовок услуги *</label>
+        <input class="input" name="title" placeholder="Например: Электромонтаж под ключ" value="${isEdit ? escapeHtml(existingService.title) : ""}" required />
+      </div>
+      <div class="form-group">
+        <label>Минимальная цена / ставка (₽) *</label>
+        <input class="input" type="number" name="price" value="${isEdit ? Number(existingService.price) : 1500}" min="0" required />
+      </div>
+      <div class="form-group">
+        <label>Описание опыта в этой сфере</label>
+        <textarea class="textarea" name="experience_description" rows="3" placeholder="Опыт работы, инструмент, гарантия...">${isEdit ? escapeHtml(existingService.experience_description || "") : ""}</textarea>
+      </div>
+      ${
+        isEdit
+          ? `<label class="switch-row">
+               <input type="checkbox" name="is_active" ${existingService.is_active ? "checked" : ""} />
+               <span>Анкета активна и видна в каталоге</span>
+             </label>`
+          : ""
+      }
+      <button class="btn btn-primary" style="width:100%" type="submit">${isEdit ? "Сохранить изменения" : "Создать услугу"}</button>
     </form>
   `
   );
 
-  document.getElementById("createMasterForm").addEventListener("submit", async (e) => {
+  document.getElementById("serviceForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
 
-    let contactPhone = (fd.get("contact_phone") || "").trim();
-    if (!contactPhone) {
-      showToast("Укажите контактный телефон", "error");
-      return;
+    const payload = {
+      category: fd.get("category"),
+      title: fd.get("title"),
+      price: Number(fd.get("price")),
+      experience_description: fd.get("experience_description") || "",
+    };
+    if (isEdit) {
+      payload.is_active = fd.get("is_active") === "on";
     }
-    let cleaned = contactPhone.replace(/[\s()\-]/g, "");
-    if (cleaned.startsWith("8") && cleaned.length === 11) {
-      cleaned = "+7" + cleaned.slice(1);
-    }
-    if (!/^\+7\d{10}$/.test(cleaned)) {
-      showToast("Некорректный номер телефона. Формат: +7XXXXXXXXXX", "error");
-      return;
-    }
-    contactPhone = cleaned;
 
     try {
-      await api.createMasterProfile({
-        headline: fd.get("headline"),
-        contact_phone: contactPhone,
-        category: fd.get("category"),
-        city: fd.get("city"),
-        experience_years: Number(fd.get("experience_years")),
-        min_price: Number(fd.get("min_price")),
-        bio: fd.get("bio"),
-      });
+      if (isEdit) {
+        await api.updateMasterService(existingService.id, payload);
+        showToast("Анкета услуги обновлена!", "success");
+      } else {
+        await api.createMasterService(payload);
+        showToast("Анкета услуги добавлена!", "success");
+      }
       modal.close();
-      showToast("Анкета мастера создана!", "success");
       loadData();
     } catch (err) {
       showToast(err.message, "error");
     }
   });
+}
+
+async function openMasterProfileModal(profileId) {
+  try {
+    const data = await api.getPublicMasterProfile(profileId);
+    const p = data.profile;
+    const services = data.services || [];
+    const reviews = data.reviews || [];
+
+    const avatarHtml = p.avatar_url
+      ? `<img class="profile-avatar" src="${escapeHtml(p.avatar_url)}" alt="${escapeHtml(p.display_name)}" />`
+      : `<div class="profile-avatar">${escapeHtml((p.display_name || "М").slice(0, 1).toUpperCase())}</div>`;
+
+    const contactsHtml = data.contacts_visible
+      ? `
+        <div class="task-contacts" style="margin-bottom:14px; padding:10px 12px; background:var(--bg-subtle, #f8fafc); border:1px solid var(--border, #e2e8f0); border-radius:8px; font-size:13px;">
+          <div><strong>Контакты мастера:</strong></div>
+          ${p.contact_phone ? `<div>📞 <a href="tel:${escapeHtml(p.contact_phone)}">${escapeHtml(p.contact_phone)}</a></div>` : ""}
+          ${p.telegram ? `<div>✈️ Telegram: ${escapeHtml(p.telegram)}</div>` : ""}
+        </div>
+      `
+      : `
+        <div class="task-contacts" style="margin-bottom:14px; padding:10px 12px; background:var(--bg-subtle, #f8fafc); border:1px solid var(--border, #e2e8f0); border-radius:8px; font-size:13px; color:var(--text-secondary);">
+          🔒 Контакты скрыты владельцем и откроются после назначения на заказ
+        </div>
+      `;
+
+    const servicesHtml = services.length
+      ? services
+          .map(
+            (s) => `
+          <div class="service-item">
+            <div class="card-top" style="margin-bottom:6px;">
+              <span class="tag">${CATEGORY_LABELS[s.category] || escapeHtml(s.category)}</span>
+              <strong>от ${Number(s.price).toLocaleString("ru-RU")} ₽</strong>
+            </div>
+            <div style="font-weight:600; margin-bottom:4px;">${escapeHtml(s.title)}</div>
+            <div style="font-size:13px; color:var(--text-secondary);">${escapeHtml(s.experience_description || "")}</div>
+          </div>`
+          )
+          .join("")
+      : `<p style="font-size:13px; color:var(--text-secondary);">Активных услуг пока нет.</p>`;
+
+    const reviewsHtml = reviews.length
+      ? reviews
+          .map(
+            (rev) => `
+          <div class="review-item">
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:13px;">
+              <strong>${escapeHtml(rev.author_name || `Заказчик #${rev.author_user_id}`)}</strong>
+              <span class="tag rating-badge">★ ${Number(rev.rating)}/5</span>
+            </div>
+            ${rev.comment ? `<div style="font-size:13px; color:var(--text-secondary);">${escapeHtml(rev.comment)}</div>` : ""}
+          </div>`
+          )
+          .join("")
+      : `<p style="font-size:13px; color:var(--text-secondary);">Отзывов пока нет.</p>`;
+
+    modal.open(
+      "Профиль мастера",
+      `
+      <div class="profile-header">
+        ${avatarHtml}
+        <div>
+          <h3 style="margin:0 0 4px;">${escapeHtml(p.display_name)}</h3>
+          <div style="font-size:13px; color:var(--text-secondary);">
+            📍 ${escapeHtml(p.city || "Город не указан")}${p.district ? `, р-н ${escapeHtml(p.district)}` : ""}
+          </div>
+        </div>
+      </div>
+
+      <div class="profile-stats">
+        <span class="tag rating-badge">${formatRating(p.rating_avg, p.reviews_count)}</span>
+        <span class="tag status-completed">Выполнено заказов: ${Number(p.completed_orders_count || 0)}</span>
+      </div>
+
+      ${p.about ? `<p style="font-size:14px; color:var(--text-secondary); margin-bottom:14px;">${escapeHtml(p.about)}</p>` : ""}
+      ${contactsHtml}
+
+      <h4 style="margin:14px 0 8px;">Услуги мастера</h4>
+      ${servicesHtml}
+
+      <h4 style="margin:14px 0 8px;">Отзывы заказчиков (${reviews.length})</h4>
+      ${reviewsHtml}
+    `
+    );
+  } catch (err) {
+    showToast(err.message, "error");
+  }
 }
 
 function openBidModal(taskId, taskTitle) {
@@ -282,8 +592,8 @@ function openBidModal(taskId, taskTitle) {
     `Отклик на: ${taskTitle}`,
     `
     <form id="bidForm">
-      <div class="form-group"><label>Ваша цена (₽)</label><input class="input" type="number" name="proposed_price" value="2500" min="0" required /></div>
-      <div class="form-group"><label>Комментарий заказчику</label><textarea class="textarea" name="comment" rows="3" placeholder="Опишите сроки и наличие инструмента..." required></textarea></div>
+      <div class="form-group"><label>Ваша цена (₽, необязательно)</label><input class="input" type="number" name="proposed_price" placeholder="Например: 2500" min="0" /></div>
+      <div class="form-group"><label>Комментарий заказчику (необязательно)</label><textarea class="textarea" name="comment" rows="3" placeholder="Опишите сроки и наличие инструмента..."></textarea></div>
       <button class="btn btn-primary" style="width:100%" type="submit">Отправить отклик</button>
     </form>
   `
@@ -292,10 +602,11 @@ function openBidModal(taskId, taskTitle) {
   document.getElementById("bidForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
+    const rawPrice = (fd.get("proposed_price") || "").trim();
     try {
       await api.createBid(taskId, {
-        proposed_price: Number(fd.get("proposed_price")),
-        comment: fd.get("comment"),
+        proposed_price: rawPrice !== "" ? Number(rawPrice) : null,
+        comment: (fd.get("comment") || "").trim(),
       });
       modal.close();
       showToast("Отклик отправлен заказчику!", "success");
@@ -314,13 +625,21 @@ async function openViewBidsModal(taskId) {
             (b) => `
           <div class="bid-item">
             <div class="bid-item-header">
-              <span>Мастер #${b.master_id}</span>
-              <span>${Number(b.proposed_price).toLocaleString("ru-RU")} ₽</span>
+              <span><strong>${escapeHtml(b.master_display_name || `Мастер #${b.master_profile_id}`)}</strong></span>
+              <span>${b.proposed_price !== undefined && b.proposed_price !== null ? `${Number(b.proposed_price).toLocaleString("ru-RU")} ₽` : "Цена по договорённости"}</span>
             </div>
-            <p style="font-size:14px; color:var(--text-secondary); margin-bottom:10px;">${b.comment}</p>
-            <button class="btn btn-primary btn-sm" data-assign-task="${taskId}" data-assign-master="${b.master_id}">
-              Выбрать исполнителем
-            </button>
+            <div style="font-size:12px; color:var(--text-secondary); margin-bottom:6px;">
+              ${formatRating(b.master_rating_avg, b.master_reviews_count)} • Выполнено заказов: ${Number(b.master_completed_orders_count || 0)}
+            </div>
+            ${b.comment ? `<p style="font-size:14px; color:var(--text-secondary); margin-bottom:10px;">${escapeHtml(b.comment)}</p>` : ""}
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <button class="btn btn-secondary btn-sm" data-action="view-master-profile" data-master-profile-id="${b.master_profile_id}">
+                Профиль мастера
+              </button>
+              <button class="btn btn-primary btn-sm" data-assign-task="${taskId}" data-assign-master="${b.master_profile_id}">
+                Выбрать исполнителем
+              </button>
+            </div>
           </div>`
           )
           .join("")
@@ -345,6 +664,56 @@ async function openViewBidsModal(taskId) {
   }
 }
 
+function openReviewFormModal(taskId, existingReview = null) {
+  const isEdit = Boolean(existingReview);
+  const currentRating = isEdit ? Number(existingReview.rating) : 5;
+  const ratingOptions = [5, 4, 3, 2, 1]
+    .map((val) => `<option value="${val}"${val === currentRating ? " selected" : ""}>${"★".repeat(val)} (${val})</option>`)
+    .join("");
+
+  modal.open(
+    isEdit ? "Редактировать отзыв" : "Оставить отзыв о мастере",
+    `
+    <form id="reviewForm">
+      <div class="form-group">
+        <label>Оценка *</label>
+        <select class="input" name="rating" required>
+          ${ratingOptions}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Комментарий</label>
+        <textarea class="textarea" name="comment" rows="3" placeholder="Поделитесь впечатлением о выполненной работе">${isEdit ? escapeHtml(existingReview.comment || "") : ""}</textarea>
+      </div>
+      <button class="btn btn-primary" style="width:100%" type="submit">${isEdit ? "Сохранить отзыв" : "Опубликовать отзыв"}</button>
+    </form>
+  `
+  );
+
+  document.getElementById("reviewForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const payload = {
+      rating: Number(fd.get("rating")),
+      comment: (fd.get("comment") || "").trim(),
+    };
+
+    try {
+      if (isEdit) {
+        await api.updateReview(existingReview.id, payload);
+        showToast("Отзыв обновлён!", "success");
+      } else {
+        await api.createReview(taskId, payload);
+        showToast("Отзыв опубликован!", "success");
+      }
+      modal.close();
+      loadData();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  });
+}
+
 // --- Global Event Delegation ---
 document.addEventListener("click", async (e) => {
   const target = e.target.closest("button");
@@ -358,13 +727,25 @@ document.addEventListener("click", async (e) => {
   } else if (target.id === "btnOpenRegister") {
     openRegisterModal();
   } else if (target.id === "btnLogout") {
-    store.clearSession();
-    showToast("Вы вышли из аккаунта");
-    loadData();
+    try {
+      await api.logout();
+    } catch {
+      // Локальную сессию сбрасываем даже при сетевой ошибке
+    } finally {
+      store.clearSession();
+      if (store.state.activeTab === "cabinet") {
+        store.setState({ activeTab: "tasks", myProfile: null, myServices: [] });
+      }
+      showToast("Вы вышли из аккаунта");
+      loadData();
+    }
   } else if (target.id === "btnOpenCreateTask") {
-    openCreateTaskModal();
-  } else if (target.id === "btnOpenCreateMaster") {
-    openCreateMasterModal();
+    openTaskFormModal();
+  } else if (target.id === "btnGoCabinet") {
+    store.setState({ activeTab: "cabinet" });
+    loadData();
+  } else if (target.id === "btnAddService") {
+    openServiceFormModal();
   } else if (target.id === "btnApplyFilters") {
     store.setState({
       filters: {
@@ -374,10 +755,43 @@ document.addEventListener("click", async (e) => {
       },
     });
     loadData();
+  } else if (target.dataset.action === "view-master-profile") {
+    openMasterProfileModal(target.dataset.masterProfileId);
+  } else if (target.dataset.action === "edit-service") {
+    const svcId = Number(target.dataset.serviceId);
+    const svc = (store.state.myServices || []).find((item) => item.id === svcId);
+    if (svc) {
+      openServiceFormModal(svc);
+    }
+  } else if (target.dataset.action === "delete-service") {
+    if (!confirm("Удалить эту анкету услуги?")) {
+      return;
+    }
+    try {
+      await api.deleteMasterService(target.dataset.serviceId);
+      showToast("Анкета услуги удалена", "success");
+      loadData();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
   } else if (target.dataset.action === "open-bid") {
     openBidModal(target.dataset.taskId, target.dataset.taskTitle);
   } else if (target.dataset.action === "view-bids") {
     openViewBidsModal(target.dataset.taskId);
+  } else if (target.dataset.action === "edit-task") {
+    const taskId = Number(target.dataset.taskId);
+    const task = store.state.tasks.find((item) => item.id === taskId);
+    if (task) {
+      openTaskFormModal(task);
+    }
+  } else if (target.dataset.action === "mark-completed") {
+    try {
+      await api.markTaskCompleted(target.dataset.taskId);
+      showToast("Задача отмечена выполненной! Ожидается подтверждение заказчика.", "success");
+      loadData();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
   } else if (target.dataset.action === "complete-task") {
     try {
       await api.completeTask(target.dataset.taskId);
@@ -394,14 +808,21 @@ document.addEventListener("click", async (e) => {
     } catch (err) {
       showToast(err.message, "error");
     }
-  } else if (target.dataset.action === "delete-master") {
-    const masterId = target.dataset.masterId;
-    if (!confirm("Вы уверены, что хотите удалить свою анкету мастера?")) {
+  } else if (target.dataset.action === "create-review") {
+    openReviewFormModal(Number(target.dataset.taskId));
+  } else if (target.dataset.action === "edit-review") {
+    const taskId = Number(target.dataset.taskId);
+    const task = store.state.tasks.find((item) => item.id === taskId);
+    if (task?.my_review) {
+      openReviewFormModal(taskId, task.my_review);
+    }
+  } else if (target.dataset.action === "delete-review") {
+    if (!confirm("Удалить ваш отзыв?")) {
       return;
     }
     try {
-      await api.deleteMasterProfile(masterId);
-      showToast("Анкета мастера успешно удалена", "success");
+      await api.deleteReview(target.dataset.reviewId);
+      showToast("Отзыв удалён");
       loadData();
     } catch (err) {
       showToast(err.message, "error");
@@ -409,6 +830,23 @@ document.addEventListener("click", async (e) => {
   }
 });
 
+const filterCategorySelect = document.getElementById("filterCategory");
+if (filterCategorySelect) {
+  filterCategorySelect.innerHTML = renderCategoryOptions(true);
+}
+
+async function validateSessionOnStartup() {
+  if (!store.state.token) return;
+  try {
+    await api.me();
+  } catch {
+    // При протухшем refresh_token сессия уже сброшена в unauthorizedHandler
+  }
+}
+
 // Initial render & fetch
-renderNavbar(store.state);
-loadData();
+(async function initApp() {
+  renderNavbar(store.state);
+  await validateSessionOnStartup();
+  await loadData();
+})();

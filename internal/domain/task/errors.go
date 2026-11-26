@@ -8,6 +8,7 @@ var (
 	ErrTitleTooShort    = errors.New("task title must be at least 5 characters long")
 	ErrEmptyDescription = errors.New("task description cannot be empty")
 	ErrEmptyCategory    = errors.New("task category cannot be empty")
+	ErrInvalidCategory  = errors.New("invalid task category")
 	ErrInvalidBudget    = errors.New("task budget cannot be negative")
 	ErrInvalidAuthor    = errors.New("task author id must be positive")
 	ErrInvalidStatus    = errors.New("invalid task status transition")

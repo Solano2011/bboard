@@ -14,6 +14,7 @@ func NewRouter(
 	taskHandler *TaskHandler,
 	masterHandler *MasterHandler,
 	bidHandler *BidHandler,
+	reviewHandler *ReviewHandler,
 	tokenParser middleware.TokenParser,
 	log *logrus.Logger,
 ) http.Handler {
@@ -29,6 +30,8 @@ func NewRouter(
 	// Публичные маршруты аутентификации
 	mux.HandleFunc("POST /api/v1/auth/register", authHandler.Register)
 	mux.HandleFunc("POST /api/v1/auth/login", authHandler.Login)
+	mux.HandleFunc("POST /api/v1/auth/refresh", authHandler.Refresh)
+	mux.HandleFunc("POST /api/v1/auth/logout", authHandler.Logout)
 
 	// Защищённый маршрут текущего пользователя
 	meHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -41,10 +44,12 @@ func NewRouter(
 	})
 	mux.Handle("GET /api/v1/auth/me", authMW(meHandler))
 
-	// Публичный просмотр объявлений (с опциональной авторизацией) и защищённые действия с задачами
+	// Объявления заказчиков
 	mux.Handle("GET /api/v1/tasks", optAuthMW(http.HandlerFunc(taskHandler.List)))
 	mux.Handle("POST /api/v1/tasks", authMW(http.HandlerFunc(taskHandler.Create)))
+	mux.Handle("PUT /api/v1/tasks/{id}", authMW(http.HandlerFunc(taskHandler.Update)))
 	mux.Handle("POST /api/v1/tasks/{id}/assign", authMW(http.HandlerFunc(taskHandler.AssignMaster)))
+	mux.Handle("POST /api/v1/tasks/{id}/mark-completed", authMW(http.HandlerFunc(taskHandler.MarkCompleted)))
 	mux.Handle("POST /api/v1/tasks/{id}/complete", authMW(http.HandlerFunc(taskHandler.Complete)))
 	mux.Handle("POST /api/v1/tasks/{id}/cancel", authMW(http.HandlerFunc(taskHandler.Cancel)))
 
@@ -52,13 +57,26 @@ func NewRouter(
 	mux.Handle("POST /api/v1/tasks/{id}/bids", authMW(http.HandlerFunc(bidHandler.Create)))
 	mux.Handle("GET /api/v1/tasks/{id}/bids", authMW(http.HandlerFunc(bidHandler.ListByTask)))
 
-	// Публичный каталог мастеров, создание и удаление анкеты
-	mux.HandleFunc("GET /api/v1/masters", masterHandler.List)
-	mux.HandleFunc("GET /api/v1/masters/{id}", masterHandler.GetByID)
-	mux.Handle("POST /api/v1/masters", authMW(http.HandlerFunc(masterHandler.Create)))
-	mux.Handle("DELETE /api/v1/masters/{id}", authMW(http.HandlerFunc(masterHandler.Delete)))
+	// Отзывы по завершённым заказам
+	mux.Handle("POST /api/v1/tasks/{id}/review", authMW(http.HandlerFunc(reviewHandler.Create)))
+	mux.Handle("PUT /api/v1/reviews/{id}", authMW(http.HandlerFunc(reviewHandler.Update)))
+	mux.Handle("DELETE /api/v1/reviews/{id}", authMW(http.HandlerFunc(reviewHandler.Delete)))
 
-	mux.Handle("/", http.FileServer(http.Dir("web")))
+	// Профили мастеров и анкеты услуг (с optAuthMW для фильтрации скрытых контактов)
+	mux.Handle("GET /api/v1/master-profile/me", authMW(http.HandlerFunc(masterHandler.GetMyProfile)))
+	mux.Handle("PUT /api/v1/master-profile/me", authMW(http.HandlerFunc(masterHandler.UpsertMyProfile)))
+	mux.Handle("GET /api/v1/masters", optAuthMW(http.HandlerFunc(masterHandler.ListServices)))
+	mux.Handle("GET /api/v1/masters/{id}", optAuthMW(http.HandlerFunc(masterHandler.GetPublicProfile)))
+	mux.Handle("GET /api/v1/master-services", optAuthMW(http.HandlerFunc(masterHandler.ListServices)))
+	mux.Handle("POST /api/v1/master-services", authMW(http.HandlerFunc(masterHandler.CreateService)))
+	mux.Handle("PUT /api/v1/master-services/{id}", authMW(http.HandlerFunc(masterHandler.UpdateService)))
+	mux.Handle("DELETE /api/v1/master-services/{id}", authMW(http.HandlerFunc(masterHandler.DeleteService)))
+
+	fileServer := http.FileServer(http.Dir("web"))
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		fileServer.ServeHTTP(w, r)
+	}))
 	// Оборачиваем весь роутер в глобальный middleware логирования
 	return middleware.Logger(log)(mux)
 }

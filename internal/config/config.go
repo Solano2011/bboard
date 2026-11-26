@@ -12,13 +12,14 @@ import (
 
 // Config хранит все настройки приложения.
 type Config struct {
-	AppEnv      string
-	IsProd      bool
-	HTTPPort    string
-	LogLevel    string
-	DatabaseURL string
-	JWTSecret   string
-	JWTTTL      time.Duration
+	AppEnv          string
+	IsProd          bool
+	HTTPPort        string
+	LogLevel        string
+	DatabaseURL     string
+	JWTSecret       string
+	AccessTokenTTL  time.Duration
+	RefreshTokenTTL time.Duration
 }
 
 // Load загружает конфигурацию из файла .env (если существует) и переменных окружения.
@@ -39,20 +40,27 @@ func Load() (*Config, error) {
 		return nil, errors.New("JWT_SECRET is required")
 	}
 
-	ttlStr := getEnv("JWT_TTL", "24h")
-	jwtTTL, err := time.ParseDuration(ttlStr)
+	accessTTLStr := getEnv("ACCESS_TOKEN_TTL", "15m")
+	accessTokenTTL, err := time.ParseDuration(accessTTLStr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid JWT_TTL duration %q: %w", ttlStr, err)
+		return nil, fmt.Errorf("invalid ACCESS_TOKEN_TTL duration %q: %w", accessTTLStr, err)
+	}
+
+	refreshTTLStr := getEnv("REFRESH_TOKEN_TTL", "720h")
+	refreshTokenTTL, err := time.ParseDuration(refreshTTLStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid REFRESH_TOKEN_TTL duration %q: %w", refreshTTLStr, err)
 	}
 
 	return &Config{
-		AppEnv:      appEnv,
-		IsProd:      isProd,
-		HTTPPort:    getEnv("HTTP_PORT", "8080"),
-		LogLevel:    getEnv("LOG_LEVEL", "info"),
-		DatabaseURL: dbURL,
-		JWTSecret:   jwtSecret,
-		JWTTTL:      jwtTTL,
+		AppEnv:          appEnv,
+		IsProd:          isProd,
+		HTTPPort:        getEnv("HTTP_PORT", "8080"),
+		LogLevel:        getEnv("LOG_LEVEL", "info"),
+		DatabaseURL:     dbURL,
+		JWTSecret:       jwtSecret,
+		AccessTokenTTL:  accessTokenTTL,
+		RefreshTokenTTL: refreshTokenTTL,
 	}, nil
 }
 

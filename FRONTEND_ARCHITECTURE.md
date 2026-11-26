@@ -16,6 +16,8 @@ web/
 └── js/
     ├── api/
     │   └── httpClient.js
+    ├── constants/
+    │   └── categories.js
     ├── store/
     │   └── store.js
     ├── components/
@@ -33,13 +35,12 @@ web/
 - **Паттерн:** Application Shell (Каркас приложения).
 - Единственная HTML-страница SPA, изолирующая разметку от бизнес-логики.
 - Подключает `/css/styles.css` и точку входа `/js/app.js` (`type="module"`).
-- Содержит семантические контейнеры (`#navActions`, `#primaryCta`, `#contentGrid`, `#modalBackdrop`), в которые JS-компоненты монтируют интерфейс.
-- **Зависимости:** `web/css/styles.css`, `web/js/app.js` (используется в `internal/delivery/http/router.go`).
+- Содержит вкладки навигации (`Лента заказов`, `Каталог мастеров`, `Мой кабинет` для авторизованных), фильтр статусов (включая `pending_completion`) и семантические контейнеры (`#navActions`, `#primaryCta`, `#contentGrid`, `#modalBackdrop`).
 
 ### `web/css/styles.css`
 - **Паттерн:** Design Tokens (CSS Custom Properties) + BEM-like Component Classes.
-- Реализует дизайн-систему **Flat Design 2.0** через CSS-переменные в `:root` (`--primary`, `--success`, `--warning`, `--danger`).
-- Определяет пастельные бейджи статусов (`.status-open`, `.status-in_progress`, `.status-completed`, `.status-canceled`), адаптивную сетку карточек (`.grid` с микро-подъёмом при наведении), модальные окна (`.modal-backdrop`, `.modal-dialog` с `max-height` и скроллом) и уведомления (`.toast`).
+- Реализует дизайн-систему **Flat Design 2.0** через CSS-переменные в `:root`.
+- Определяет пастельные бейджи статусов (`.status-open`, `.status-in_progress`, `.status-pending_completion`, `.status-completed`, `.status-canceled`), сетку карточек (`.grid`), модальные окна (`.modal-backdrop`, `.modal-dialog`), уведомления (`.toast`), а также стили личного кабинета мастера (`.cabinet-grid`, `.cabinet-panel`, `.service-item`, `.switch-row`) и публичного профиля/отзывов (`.profile-header`, `.profile-avatar`, `.rating-badge`, `.review-item`, `.task-review-box`).
 
 ---
 
@@ -47,38 +48,34 @@ web/
 
 ### `web/js/api/httpClient.js` (Слой транспорта)
 - **Паттерн:** Facade + Token Provider Injection (Dependency Inversion).
-- Единый адаптер поверх `Fetch API` для запросов к `/api/v1/*` (UI-компоненты не вызывают `fetch` напрямую).
-- Автоматически добавляет `Authorization: Bearer <token>`, получая токен через внедрённую функцию `tokenProvider` (без циклической зависимости со `Store`).
-- Формирует `URLSearchParams` для фильтрации задач и мастеров по категории, городу и статусу, предоставляет метод `deleteMasterProfile(id)` для отправки `DELETE /api/v1/masters/{id}`.
-- Перехватывает HTTP-ошибки (`!response.ok`) и выбрасывает единый класс `ApiError` с текстом ошибки от Go-бэкенда.
+- Единый адаптер поверх `Fetch API` для запросов к `/api/v1/*` с `credentials: "include"` для работы с `HttpOnly` cookie `refresh_token`.
+- Перехватывает `401 Unauthorized` (кроме `/auth/*`), выполняет одиночный запрос `POST /api/v1/auth/refresh` через общий промис `refreshPromise` (защита от race condition), обновляет `access_token` через `tokenUpdatedHandler` и повторяет исходный запрос; при отказе refresh вызывает `unauthorizedHandler`.
+- Методы:
+  - Авторизация: `login`, `register`, `logout`, `me`.
+  - Заказы и отклики: `listTasks`, `createTask`, `updateTask`, `assignMaster(taskId, masterProfileId)`, `markTaskCompleted`, `completeTask`, `cancelTask`, `createBid`, `listTaskBids`.
+  - Мастера и услуги: `getMyMasterProfile`, `upsertMyMasterProfile`, `getPublicMasterProfile`, `listMasterServices`, `createMasterService`, `updateMasterService`, `deleteMasterService`.
+  - Отзывы: `createReview`, `updateReview`, `deleteReview`.
+
+### `web/js/constants/categories.js` (Справочник категорий)
+- Единый источник истины для списка категорий (`CATEGORIES`), словаря названий (`CATEGORY_LABELS`) и генератора `<option>` (`renderCategoryOptions`).
 
 ### `web/js/store/store.js` (Слой состояния)
 - **Паттерн:** Observer (Pub-Sub) + Singleton + Web Storage Persistence.
-- Единый источник истины (Single Source of Truth): хранит сессию пользователя, активную вкладку, фильтры и загруженные списки сущностей.
-- `subscribe(listener)` регистрирует функции перерисовки UI, вызываемые при каждом обновлении через `setState(patch)`.
-- `setSession(token, user)` и `clearSession()` синхронизируют JWT-авторизацию с `localStorage` (сессия сохраняется после перезагрузки страницы `F5`), а приватный метод `#loadSession()` безопасно восстанавливает её при старте.
+- Хранит сессию (`token`, `user`), активную вкладку (`tasks` | `masters` | `cabinet`), фильтры, `tasks`, `masters`, `myProfile` и `myServices`.
+- `clearSession()` очищает `localStorage`, сбрасывает `myProfile`/`myServices` и переводит с вкладки `cabinet` на `tasks`.
 
 ### `web/js/components/` (Слой представления)
-Изолированные рендер-функции, принимающие данные и возвращающие HTML-разметку без знания о сети и БД.
 - **`taskCard.js` (`renderTaskCard`)**:
-  - **Паттерн:** Role-Based UI Rendering + XSS Escaping.
-  - Рендерит кнопки действий в зависимости от роли пользователя («Отклики и выбор мастера» для автора, «Откликнуться» для мастера) и скрывает их для статусов `completed` и `canceled`.
-  - Отображает район (`district`) для всех пользователей и блок с телефоном и точным адресом выполнения только при их наличии в ответе сервера (для автора и назначенного исполнителя).
-  - Экранирует пользовательский ввод через `escapeHtml()`.
-- **`masterCard.js` (`renderMasterCard`)**:
-  - **Паттерн:** Role-Based UI Rendering + Stateless Functional Component.
-  - Рендерит карточку профиля мастера (специализация, `experience_years`, описание услуг, город, `min_price`, контактный телефон) с экранированием всех текстовых полей.
-  - Для владельца анкеты (`currentUser.id === profile.user_id`) отображает кнопку «Удалить анкету» (`data-action="delete-master"`).
+  - Поддерживает статус `pending_completion` («Ожидает подтверждения»).
+  - Отображает кнопки действий по роли: «Отклики и выбор мастера» / «Редактировать» / «Отменить» для автора (`open`), «Откликнуться» для других пользователей (`open`), «Отметить выполненным» для назначенного мастера (`in_progress`), «Завершить работу» / «Подтвердить выполнение» для автора, а также блок отзыва (`my_review`) и кнопки «Оставить отзыв» / «Редактировать отзыв» / «Удалить отзыв» после завершения заказа.
+  - При наличии `assigned_master_id` добавляет кнопку «Профиль исполнителя».
+- **`masterCard.js` (`renderMasterCard`, `formatRating`)**:
+  - Рендерит карточку услуги каталога (`ServiceCatalogItem`): категория, рейтинг (`★ 5.0 (3)` или `Нет отзывов`), заголовок, опыт, имя мастера, счётчик выполненных заказов, город/район, цену и кнопку «Профиль мастера».
 - **`modals.js` (`ModalManager` & `showToast`)**:
-  - **Паттерн:** Singleton UI Controller + Notification Queue.
-  - `ModalManager` управляет открытием/закрытием `#modalBackdrop` (по крестику и клику вне окна) и очисткой DOM.
-  - `showToast(message, type)` создаёт самоуничтожающиеся уведомления (`success` / `error` / `info`) в правом нижнем углу экрана.
+  - Управляет `#modalBackdrop` и всплывающими уведомлениями.
 
 ### `web/js/app.js` (Контроллер приложения)
-- **Паттерн:** Mediator + Event Delegation (Делегирование событий).
-- Главный координатор, связывающий `httpClient`, `Store` и UI-компоненты.
-- Подписывается на `store.subscribe()` для автоматической перерисовки шапки (`renderNavbar`) и сетки (`renderGrid`).
-- Использует глобальное делегирование событий (`document.addEventListener("click")`) для обработки кликов по динамически создаваемым кнопкам карточек и вкладок.
-- Управляет сценариями модальных форм: вход, регистрация, создание заказа, создание анкеты мастера, подача отклика и выбор исполнителя, а также подтверждением и удалением собственной анкеты мастера с последующей перезагрузкой состояния.
-  - В формах создания задачи и анкеты мастера предоставляет поля контактного телефона с клиентской нормализацией и строгой валидацией формата `+7XXXXXXXXXX`.
-- **Зависимости:** `web/js/api/httpClient.js`, `web/js/store/store.js`, `web/js/components/taskCard.js`, `web/js/components/masterCard.js`, `web/js/components/modals.js`.
+- **Паттерн:** Mediator + Event Delegation.
+- Последовательная инициализация `initApp()`: дожидается `validateSessionOnStartup()` (обновление протухшего access-токена через `api.me()`) до первичной загрузки `loadData()`.
+- Реализует вкладку **«Мой кабинет»** (`renderCabinet`): форма профиля мастера (включая тумблер `is_contacts_public`) и блок «Мои анкеты услуг» со счётчиком `X из 3` и блокировкой занятых категорий при создании новой анкеты.
+- Реализует публичную модалку **Профиль мастера** (`openMasterProfileModal`), модалку откликов с рейтингом и переходом в профиль (`openViewBidsModal`) и модалку отзывов (`openReviewFormModal`).

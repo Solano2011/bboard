@@ -14,6 +14,8 @@ class Store {
       },
       tasks: [],
       masters: [],
+      myProfile: null,
+      myServices: [],
       loading: false,
     };
     this.listeners = new Set();
@@ -36,7 +38,13 @@ class Store {
 
   clearSession() {
     localStorage.removeItem(STORAGE_KEY);
-    this.setState({ token: null, user: null });
+    this.setState({
+      token: null,
+      user: null,
+      myProfile: null,
+      myServices: [],
+      activeTab: this.state.activeTab === "cabinet" ? "tasks" : this.state.activeTab,
+    });
   }
 
   #loadSession() {

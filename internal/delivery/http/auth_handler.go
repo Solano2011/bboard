@@ -6,16 +6,26 @@ import (
 	"net/http"
 	"time"
 
+	domainAuth "bboard/internal/domain/auth"
 	"bboard/internal/domain/user"
 	"bboard/internal/usecase/auth"
 
 	"github.com/sirupsen/logrus"
 )
 
+const (
+	refreshTokenCookieName = "refresh_token"
+	refreshTokenCookiePath = "/api/v1/auth"
+)
+
 // AuthHandler обрабатывает HTTP-запросы, связанные с аутентификацией и регистрацией.
 type AuthHandler struct {
 	registerUC *auth.RegisterUseCase
 	loginUC    *auth.LoginUseCase
+	refreshUC  *auth.RefreshUseCase
+	logoutUC   *auth.LogoutUseCase
+	refreshTTL time.Duration
+	isProd     bool
 	log        *logrus.Entry
 }
 
@@ -23,11 +33,19 @@ type AuthHandler struct {
 func NewAuthHandler(
 	registerUC *auth.RegisterUseCase,
 	loginUC *auth.LoginUseCase,
+	refreshUC *auth.RefreshUseCase,
+	logoutUC *auth.LogoutUseCase,
+	refreshTTL time.Duration,
+	isProd bool,
 	log *logrus.Logger,
 ) *AuthHandler {
 	return &AuthHandler{
 		registerUC: registerUC,
 		loginUC:    loginUC,
+		refreshUC:  refreshUC,
+		logoutUC:   logoutUC,
+		refreshTTL: refreshTTL,
+		isProd:     isProd,
 		log:        log.WithField("handler", "auth"),
 	}
 }
@@ -54,7 +72,7 @@ type userResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-type loginResponse struct {
+type authResponse struct {
 	AccessToken string       `json:"access_token"`
 	User        userResponse `json:"user"`
 }
@@ -88,13 +106,17 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		Password: req.Password,
 	}
 
-	createdUser, err := h.registerUC.Execute(r.Context(), input)
+	out, err := h.registerUC.Execute(r.Context(), input)
 	if err != nil {
 		h.handleDomainError(w, err)
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, mapUserToResponse(createdUser))
+	h.setRefreshCookie(w, out.RefreshToken)
+	writeJSON(w, http.StatusCreated, authResponse{
+		AccessToken: out.AccessToken,
+		User:        mapUserToResponse(out.User),
+	})
 }
 
 // Login обрабатывает POST /api/v1/auth/login.
@@ -124,15 +146,73 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := loginResponse{
-		AccessToken: out.Token,
+	h.setRefreshCookie(w, out.RefreshToken)
+	writeJSON(w, http.StatusOK, authResponse{
+		AccessToken: out.AccessToken,
 		User:        mapUserToResponse(out.User),
+	})
+}
+
+// Refresh обрабатывает POST /api/v1/auth/refresh.
+func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie(refreshTokenCookieName)
+	if err != nil || cookie.Value == "" {
+		h.clearRefreshCookie(w)
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "missing refresh token"})
+		return
 	}
 
-	writeJSON(w, http.StatusOK, resp)
+	out, err := h.refreshUC.Execute(r.Context(), cookie.Value)
+	if err != nil {
+		h.clearRefreshCookie(w)
+		h.handleDomainError(w, err)
+		return
+	}
+
+	h.setRefreshCookie(w, out.RefreshToken)
+	writeJSON(w, http.StatusOK, authResponse{
+		AccessToken: out.AccessToken,
+		User:        mapUserToResponse(out.User),
+	})
+}
+
+// Logout обрабатывает POST /api/v1/auth/logout.
+func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(refreshTokenCookieName); err == nil && cookie.Value != "" {
+		if err := h.logoutUC.Execute(r.Context(), cookie.Value); err != nil {
+			h.log.WithError(err).Error("failed to revoke refresh token on logout")
+		}
+	}
+
+	h.clearRefreshCookie(w)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // --- Helpers ---
+
+func (h *AuthHandler) setRefreshCookie(w http.ResponseWriter, rawToken string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     refreshTokenCookieName,
+		Value:    rawToken,
+		Path:     refreshTokenCookiePath,
+		MaxAge:   int(h.refreshTTL.Seconds()),
+		HttpOnly: true,
+		Secure:   h.isProd,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func (h *AuthHandler) clearRefreshCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     refreshTokenCookieName,
+		Value:    "",
+		Path:     refreshTokenCookiePath,
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   h.isProd,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
 
 func mapUserToResponse(u *user.User) userResponse {
 	return userResponse{
@@ -155,7 +235,10 @@ func (h *AuthHandler) handleDomainError(w http.ResponseWriter, err error) {
 	case errors.Is(err, user.ErrUserAlreadyExist):
 		writeJSON(w, http.StatusConflict, errorResponse{Error: err.Error()})
 
-	case errors.Is(err, user.ErrInvalidCreds):
+	case errors.Is(err, user.ErrInvalidCreds),
+		errors.Is(err, domainAuth.ErrInvalidRefreshToken),
+		errors.Is(err, domainAuth.ErrRefreshTokenExpired),
+		errors.Is(err, domainAuth.ErrRefreshTokenRevoked):
 		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: err.Error()})
 
 	default:

@@ -14,20 +14,26 @@ bboard/
 ├── internal/
 │   ├── config/config.go
 │   ├── domain/
+│   │   ├── category/  (category.go)
+│   │   ├── auth/      (entity.go, errors.go, repository.go)
 │   │   ├── user/      (entity.go, errors.go, repository.go)
 │   │   ├── task/      (entity.go, errors.go, repository.go)
 │   │   ├── master/    (entity.go, errors.go, repository.go)
-│   │   └── bid/       (entity.go, errors.go, repository.go)
+│   │   ├── bid/       (entity.go, errors.go, repository.go)
+│   │   └── review/    (entity.go, errors.go, repository.go)
 │   ├── usecase/
-│   │   ├── auth/      (register.go, login.go)
-│   │   ├── task/      (create_task.go, list_tasks.go, assign_master.go, complete_task.go, cancel_task.go)
-│   │   ├── master/    (create_profile.go, list_profiles.go, delete_profile.go)
-│   │   └── bid/       (create_bid.go, list_bids.go)
+│   │   ├── auth/      (tokens.go, register.go, login.go, refresh.go, logout.go)
+│   │   ├── task/      (create_task.go, list_tasks.go, update_task.go, assign_master.go, mark_completed.go, complete_task.go, cancel_task.go)
+│   │   ├── master/    (upsert_profile.go, get_my_profile.go, get_public_profile.go, create_service.go, update_service.go, delete_service.go, list_services.go)
+│   │   ├── bid/       (create_bid.go, list_bids.go)
+│   │   └── review/    (create_review.go, update_review.go, delete_review.go)
 │   ├── repository/postgres/
 │   │   ├── user_repo.go
+│   │   ├── refresh_token_repo.go
 │   │   ├── task_repo.go
 │   │   ├── master_repo.go
-│   │   └── bid_repo.go
+│   │   ├── bid_repo.go
+│   │   └── review_repo.go
 │   └── delivery/http/
 │       ├── middleware/ (logger.go, auth.go)
 │       ├── router.go
@@ -35,17 +41,20 @@ bboard/
 │       ├── auth_handler.go
 │       ├── task_handler.go
 │       ├── master_handler.go
-│       └── bid_handler.go
+│       ├── bid_handler.go
+│       └── review_handler.go
 ├── pkg/
 │   ├── logger/logger.go
-│   └── token/jwt.go
+│   └── token/ (jwt.go, refresh.go)
 ├── migrations/
 │   ├── 000001_create_users_table.up.sql
 │   ├── 000002_create_tasks_table.up.sql
 │   ├── 000003_create_master_profiles.up.sql
 │   ├── 000004_create_task_bids.up.sql
 │   ├── 000005_add_master_contact_phone.up.sql
-│   └── 000006_add_task_location_and_contacts.up.sql
+│   ├── 000006_add_task_location_and_contacts.up.sql
+│   ├── 000007_create_refresh_tokens_table.up.sql
+│   └── 000008_rework_masters_tasks_reviews.up.sql
 ├── docker-compose.yml
 ├── go.mod
 ├── .env
@@ -58,15 +67,14 @@ bboard/
 
 ### `cmd/api/main.go` (Composition Root)
 Единственное место в программе, знающее обо всех слоях одновременно:
-- Загружает конфигурацию из `.env` через `config.Load()`.
+- Загружает конфигурацию из `.env` через `config.Load()` (при ошибке выводит сообщение в `os.Stderr` и завершает процесс с кодом `1`).
 - Инициализирует логгер `logrus` и открывает пул соединений `pgxpool` к PostgreSQL.
-- Создаёт экземпляры репозиториев (`UserRepo`, `TaskRepo`, `MasterRepo`, `BidRepo`).
+- Создаёт экземпляры репозиториев (`UserRepo`, `RefreshTokenRepo`, `TaskRepo`, `MasterRepo`, `BidRepo`, `ReviewRepo`).
 - Связывает зависимости: репозитории → юзкейсы → HTTP-хэндлеры → роутер.
 - Запускает `http.Server` с таймаутами и реализует Graceful Shutdown по сигналам `SIGINT` / `SIGTERM`.
-- **Зависимости:** `internal/config/config.go`, `internal/repository/postgres`, `internal/usecase`, `internal/delivery/http/router.go`, `pkg/logger/logger.go`, `pkg/token/jwt.go`.
 
 ### `internal/config/config.go`
-- Загружает переменные из `.env` (через `godotenv`) и системного окружения в структуру `Config` (`HTTP_PORT`, `DATABASE_URL`, `JWT_SECRET`, `JWT_TTL`, `LOG_LEVEL`, `APP_ENV`).
+- Загружает переменные из `.env` (через `godotenv`) и системного окружения в структуру `Config` (`HTTP_PORT`, `DATABASE_URL`, `JWT_SECRET`, `ACCESS_TOKEN_TTL`, `REFRESH_TOKEN_TTL`, `LOG_LEVEL`, `APP_ENV`).
 - Завершает запуск с ошибкой при отсутствии критически важных параметров (`JWT_SECRET`, `DATABASE_URL`).
 
 ---
@@ -75,95 +83,102 @@ bboard/
 
 Самый внутренний и независимый слой. Не имеет внешних зависимостей (ни SQL, ни HTTP, ни JSON-тегов). Определяет бизнес-сущности, инварианты, доменные ошибки и интерфейсы репозиториев.
 
+### `internal/domain/category` (Категории работ)
+- **`category.go`**: общий словарь допустимых категорий (`electric`, `plumbing`, `earthworks`, `repair`, `cargo`, `other`), функции `Normalize(raw)` и `IsValid(cat)` для строгой валидации (whitelist) на уровне домена.
+
+### `internal/domain/auth` (Refresh-токены)
+- **`entity.go`**: сущность `RefreshToken` (`UserID`, `TokenHash`, `ExpiresAt`, `RevokedAt`) с методами `IsRevoked()` и `IsExpired(now)`.
+- **`errors.go`**: `ErrInvalidRefreshToken`, `ErrRefreshTokenExpired`, `ErrRefreshTokenRevoked`.
+- **`repository.go`**: интерфейс `RefreshTokenRepository` (`Create`, `GetByHash`, `RevokeIfActive`, `RevokeByHash`, `RevokeAllByUserID`).
+
 ### `internal/domain/user` (Пользователи)
 - **`entity.go`**: структура `User` и конструктор `NewUser`. Нормализует email (`TrimSpace + ToLower`), очищает пробелы в имени и телефоне, запрещает пустое имя или некорректный email.
 - **`errors.go`**: `ErrUserNotFound`, `ErrEmailAlreadyExists`, `ErrInvalidCredentials`, `ErrInvalidEmail`.
-- **`repository.go`**: интерфейс `Repository` с методами `Create`, `GetByID`, `GetByEmail`.
+- **`repository.go`**: интерфейс `Repository` с методами `Create`, `GetByID`, `GetByEmail`, `Update`.
 
 ### `internal/domain/task` (Объявления)
-- **`entity.go`**: богатая доменная модель `Task` со State Machine статусов (`open → in_progress → completed / canceled`) и полями `District`, `ContactPhone`, `WorkAddress`:
-  - `NewTask`: валидирует заголовок, описание, категорию, неотрицательный бюджет, длину района (до 100 симв.), нормализует телефон (замена 8 на +7, очистка скобок/дефисов/пробелов, проверка `^\+7\d{10}$`) и длину адреса (до 255 симв.).
-  - `AssignMaster(actorID, masterID)`: проверяет права автора, запрещает самоназначение и переводит статус в `in_progress`.
-  - `Complete(actorID)`: закрывает задачу только из статуса `in_progress` при наличии назначенного мастера.
-  - `Cancel(actorID)`: отменяет открытую или выполняемую задачу, блокируя повторную отмену.
-- **`errors.go`**: `ErrTaskNotFound`, `ErrForbiddenAction`, `ErrInvalidStatus`, `ErrSelfAssignment`, `ErrInvalidMaster`, `ErrDistrictTooLong`, `ErrInvalidPhone`, `ErrAddressTooLong`.
-- **`repository.go`**: интерфейс `Repository` (`Create`, `GetByID`, `List(ctx, filter)`, `Update`) и структура `ListFilter`.
+- **`entity.go`**: богатая доменная модель `Task` со State Machine статусов (`open → in_progress → pending_completion → completed / canceled`), ссылкой `AssignedMasterID` на `master_profiles.id` и полями `District`, `ContactPhone`, `WorkAddress`:
+  - `NewTask` и `Update`: переиспользуют хелпер `validateAndNormalizeFields`.
+  - `AssignMaster(actorID, masterProfileID, masterUserID)`: проверяет права автора, запрещает самоназначение (`t.AuthorID != masterUserID`) и переводит статус в `in_progress`.
+  - `MarkCompletedByMaster(actorProfileID)`: переводит задачу из `in_progress` в `pending_completion` назначенным мастером.
+  - `Complete(actorID)`: закрывает задачу из `in_progress` или `pending_completion` автором (при отсутствии исполнителя возвращает `ErrMasterNotAssigned`).
+  - `Cancel(actorID)`: отменяет незавершённую задачу, блокируя повторную отмену.
+- **`errors.go`**: `ErrTaskNotFound`, `ErrForbiddenAction`, `ErrInvalidStatus`, `ErrSelfAssignment`, `ErrInvalidMaster`, `ErrMasterNotAssigned`, `ErrDistrictTooLong`, `ErrInvalidPhone`, `ErrAddressTooLong`, `ErrEmptyCategory`, `ErrInvalidCategory`.
+- **`repository.go`**: интерфейс `Repository` (`Create`, `GetByID`, `List`, `Update(ctx, t, allowedPrevStatuses...)`, `CompleteAndIncrementMasterCounter`).
 
-### `internal/domain/master` (Анкеты мастеров)
-- **`entity.go`**: структура `Profile`, конструктор `NewProfile`, метод `Update` и хелпер `normalizeAndValidatePhone`. Проверяет обязательный контактный телефон (очистка скобок/дефисов/пробелов, замена 8 на +7, проверка формата `^\+7\d{10}$`), минимальную длину заголовка, неотрицательный стаж (`ExperienceYears >= 0`) и минимальную цену (`MinPrice >= 0`), управляет флагом `IsActive`.
-- **`errors.go`**: `ErrProfileNotFound`, `ErrProfileAlreadyExists`, `ErrInvalidExperience`, `ErrInvalidMinPrice`, `ErrEmptyContactPhone`, `ErrInvalidPhone`, `ErrForbiddenAction`, `ErrProfileInUse`.
-- **`repository.go`**: интерфейс `Repository` (`Create`, `GetByID`, `GetByUserID`, `List`, `Update`, `Delete`).
+### `internal/domain/master` (Профили мастеров и анкеты услуг)
+- **`entity.go`**:
+  - `Profile` (1 на `user_id`): `DisplayName`, `AvatarURL` (с проверкой `http://`/`https://`), `About`, `City`, `District`, `ContactPhone` (`+7XXXXXXXXXX`), `Telegram`, `IsContactsPublic`, агрегаты `RatingAvg`, `ReviewsCount`, `CompletedOrdersCount`.
+  - `Service` (до `MaxActiveServices = 3` активных на профиль): `Category` (whitelist), `Title`, `ExperienceDescription`, `Price`, `IsActive`.
+  - `ServiceCatalogItem`: read-модель каталога услуг с метриками профиля мастера.
+- **`errors.go`**: `ErrProfileNotFound`, `ErrProfileAlreadyExists`, `ErrServiceNotFound`, `ErrServiceCategoryExists`, `ErrMaxActiveServicesReached`, `ErrEmptyDisplayName`, `ErrDisplayNameTooLong`, `ErrCityTooLong`, `ErrTelegramTooLong`, `ErrInvalidAvatarURL`, `ErrEmptyTitle`, `ErrTitleTooShort`, `ErrTitleTooLong`, `ErrInvalidPrice`, `ErrEmptyContactPhone`, `ErrInvalidPhone`, `ErrDistrictTooLong`, `ErrForbiddenAction`, `ErrProfileInUse`, `ErrEmptyCategory`, `ErrInvalidCategory`.
+- **`repository.go`**: методы профиля (`CreateProfile`, `GetProfileByID`, `GetProfileByUserID`, `UpdateProfile`, `DeleteProfile`, `HasSharedTaskWithProfile`) и услуг (`CreateService`, `GetServiceByID`, `UpdateService`, `DeleteService`, `CountActiveServices`, `ListServicesByProfileID`, `ListCatalogServices`).
 
 ### `internal/domain/bid` (Отклики мастеров)
-- **`entity.go`**: сущность `Bid` с предложенной ценой (`ProposedPrice`) и комментарием. Валидирует ID задачи, ID мастера, неотрицательную цену и длину комментария (минимум 5 символов).
+- **`entity.go`**: сущность `Bid` (`task_responses`) с `MasterProfileID`, опциональными `ProposedPrice (*int64)` и `Comment`, а также краткими метриками профиля мастера для списка откликов.
 - **`errors.go`**: `ErrBidAlreadyExists`, `ErrSelfBidNotAllowed`, `ErrTaskNotOpenForBids`, `ErrMasterProfileNeeded`, `ErrForbiddenView`.
 - **`repository.go`**: интерфейс `Repository` (`Create`, `ListByTaskID`).
+
+### `internal/domain/review` (Отзывы и рейтинг)
+- **`entity.go`**: сущность `Review` (`TaskID`, `MasterProfileID`, `AuthorUserID`, `Rating 1..5`, `Comment`) с конструктором `NewReview` и методом `Update`.
+- **`errors.go`**: `ErrInvalidTaskID`, `ErrInvalidMasterID`, `ErrInvalidAuthorID`, `ErrReviewNotFound`, `ErrReviewAlreadyExists`, `ErrInvalidRating`, `ErrTaskNotCompleted`, `ErrForbiddenReview`.
+- **`repository.go`**: интерфейс `Repository` (`Create`, `GetByID`, `GetByTaskID`, `GetByTaskIDs`, `ListByMasterProfileID`, `Update`, `Delete`).
 
 ---
 
 ## 3. Слой Бизнес-сценариев — `internal/usecase` (Application)
 
-Оркестрирует работу доменных репозиториев и инфраструктурных сервисов (`bcrypt`, `JWT`).
-
 ### `internal/usecase/auth`
-- **`register.go` (`RegisterUseCase`)**: проверяет длину пароля (`>= 6` символов) и уникальность email, хеширует пароль через `bcrypt.DefaultCost`, создаёт `user.NewUser` и сохраняет в `userRepo`.
-- **`login.go` (`LoginUseCase`)**: находит пользователя по email, сверяет bcrypt-хеш и выпускает JWT-токен через `TokenGenerator`.
+- **`tokens.go`**, **`register.go`**, **`login.go`**, **`refresh.go`**, **`logout.go`**: выпуск пары JWT access + refresh (SHA-256), атомарная ротация с отзывом всех сессий при повторном использовании, выход.
 
 ### `internal/usecase/task`
-- **`create_task.go` (`CreateTaskUseCase`)**: проверяет существование автора в `userRepo`, создаёт задачу в статусе `open` и сохраняет в `taskRepo`.
-- **`list_tasks.go` (`ListTasksUseCase`)**: нормализует `limit`/`offset`, по умолчанию фильтрует задачи по `status=open`.
-- **`assign_master.go` (`AssignMasterUseCase`)**: проверяет через `masterRepo` наличие активной анкеты у исполнителя, вызывает `t.AssignMaster(actorID, masterID)` и сохраняет задачу.
-- **`complete_task.go` (`CompleteTaskUseCase`)**: загружает задачу, вызывает `t.Complete(actorID)` и обновляет запись в БД.
-- **`cancel_task.go` (`CancelTaskUseCase`)**: загружает задачу, вызывает `t.Cancel(actorID)` и сохраняет статус `canceled`.
+- **`create_task.go`**, **`list_tasks.go`**, **`update_task.go`**, **`cancel_task.go`**: базовый жизненный цикл объявлений.
+- **`assign_master.go` (`AssignMasterUseCase`)**: проверяет существование `master_profiles` по `MasterProfileID` и запрещает самоназначение.
+- **`mark_completed.go` (`MarkTaskCompletedUseCase`)**: перевод назначенным мастером `in_progress → pending_completion`.
+- **`complete_task.go` (`CompleteTaskUseCase`)**: закрытие автором (`in_progress` / `pending_completion → completed`) через `CompleteAndIncrementMasterCounter`.
 
 ### `internal/usecase/master`
-- **`create_profile.go` (`CreateProfileUseCase`)**: проверяет существование пользователя, передаёт обязательный контактный телефон мастера, валидирует профиль через `master.NewProfile` и сохраняет его.
-- **`list_profiles.go` (`ListProfilesUseCase`)**: фильтрует анкеты по категории и городу, возвращая только профили с `IsActive=true`.
-- **`delete_profile.go` (`DeleteProfileUseCase`)**: проверяет существование анкеты мастера и принадлежность вызывающему пользователю (`profile.UserID == input.ActorID`, иначе `ErrForbiddenAction`), после чего вызывает `masterRepo.Delete`.
+- **`upsert_profile.go` (`UpsertProfileUseCase`)**: создание или обновление профиля мастера (с поддержкой `*bool` для `IsContactsPublic` и фоллбэком пустого `DisplayName` на `user.Name`).
+- **`get_my_profile.go` (`GetMyProfileUseCase`)**: возвращает свой профиль и все услуги (включая скрытые).
+- **`get_public_profile.go` (`GetPublicProfileUseCase`)**: возвращает публичный профиль, активные услуги, отзывы и фильтрует контакты на бэкенде при `is_contacts_public == false`.
+- **`create_service.go`**, **`update_service.go`**, **`delete_service.go`**, **`list_services.go`**: CRUD анкет услуг и публичный каталог.
 
 ### `internal/usecase/bid`
-- **`create_bid.go` (`CreateBidUseCase`)**: проверяет наличие активной анкеты мастера у пользователя, статус задачи (`open`) и отсутствие самоотклика; сохраняет отклик в `bidRepo`.
-- **`list_bids.go` (`ListBidsUseCase`)**: проверяет, что запрашивающий является автором задачи (`t.AuthorID == input.ActorID`), иначе возвращает `ErrForbiddenView`.
+- **`create_bid.go` (`CreateBidUseCase`)**: проверяет наличие профиля и `CountActiveServices > 0`, статус задачи (`open`), запрет самоотклика.
+- **`list_bids.go` (`ListBidsUseCase`)**: возвращает отклики автору задачи.
+
+### `internal/usecase/review`
+- **`create_review.go`**, **`update_review.go`**, **`delete_review.go`**: создание (только автор, только `completed` заказ), редактирование и удаление отзыва.
 
 ---
 
 ## 4. Слой Хранения — `internal/repository/postgres` (Infrastructure)
 
-Реализует интерфейсы из `internal/domain/` на базе `pgxpool` (`pgx/v5`), маппит строки БД в доменные сущности и преобразует SQL-ошибки (например, `SQLSTATE 23505` — нарушение уникальности, `SQLSTATE 23503` — нарушение внешнего ключа) в доменные ошибки.
-
-- **`user_repo.go` (`UserRepo`)**: `INSERT` и `SELECT` по `id` и `email` в таблице `users`.
-- **`task_repo.go` (`TaskRepo`)**: работа с таблицей `tasks`, поддержка nullable-колонки `master_id (*int64)` и динамическое построение `WHERE` для фильтров.
-- **`master_repo.go` (`MasterRepo`)**: работа с таблицей `master_profiles`, поиск по `user_id`, выборка каталога с сортировкой по опыту и удаление анкеты `Delete(ctx, id)` с перехватом `SQLSTATE 23503` в `master.ErrProfileInUse`.
-- **`bid_repo.go` (`BidRepo`)**: запись откликов в `task_bids` (с проверкой уникальности пары `task_id + master_id`) и выборка откликов по задаче.
+- **`user_repo.go` (`UserRepo`)**: работа с `users`.
+- **`refresh_token_repo.go` (`RefreshTokenRepo`)**: работа с `refresh_tokens`.
+- **`task_repo.go` (`TaskRepo`)**: `assigned_master_id`, оптимистическая проверка `allowedPrevStatuses` в `Update` и транзакционное завершение `CompleteAndIncrementMasterCounter` с `FOR UPDATE`.
+- **`master_repo.go` (`MasterRepo`)**: CRUD профилей и услуг, блокировка профиля `FOR UPDATE` при создании/активации услуги для соблюдения лимита `3`, маппинг `pgErr.ConstraintName` (`23505` / `23503` / `23514`), проверка совместных заказов `HasSharedTaskWithProfile`.
+- **`bid_repo.go` (`BidRepo`)**: работа с `task_responses` с `JOIN master_profiles`.
+- **`review_repo.go` (`ReviewRepo`)**: CRUD по `master_reviews` с блокировкой профиля `FOR UPDATE` и транзакционным пересчётом `rating_avg` / `reviews_count`, батч-загрузка `GetByTaskIDs` (`ANY($1)`) и пагинация `ListByMasterProfileID`.
 
 ---
 
 ## 5. Транспортный слой — `internal/delivery/http` (Delivery)
 
-Реализация REST API на стандартной библиотеке Go 1.22+ (`http.ServeMux` с поддержкой методов и path-параметров `{id}`).
-
-- **`middleware/logger.go`**: генерирует уникальный `X-Request-ID`, перехватывает HTTP-статус и замеряет `duration_ms` для `logrus`.
-- **`middleware/auth.go`**: содержит `Auth` (строгая проверка Bearer-токена с 401) и `OptionalAuth` (извлекает `userID` из валидного Bearer-токена, пропуская гостей без токена без ошибки 401).
-- **`router.go` (`NewRouter`)**: регистрирует публичные маршруты (`/health`, `/api/v1/auth/*`, `GET /tasks`, `GET /masters`) и оборачивает приватные маршруты в `authMW`.
-- **`response.go`**: хелпер `writeJSON` с заголовком `Content-Type: application/json` и единым форматом `errorResponse`.
-- **`auth_handler.go`**: регистрация и вход (использует `MaxBytesReader` и `DisallowUnknownFields`).
-- **`task_handler.go`**: `POST /tasks`, `GET /tasks`, `POST /tasks/{id}/assign`, `/complete`, `/cancel`. Район (`district`) отдаётся всем, а `contact_phone` и `work_address` — только автору и назначенному мастеру в статусах `in_progress`/`completed`. Маппит доменные ошибки в HTTP-коды (`400`, `403`, `404`, `409`).
-- **`master_handler.go`**: `POST /api/v1/masters`, `GET /api/v1/masters` и `DELETE /api/v1/masters/{id}`. Маппит доменные ошибки валидации телефона (`ErrEmptyContactPhone`, `ErrInvalidPhone`) в HTTP 400, `ErrForbiddenAction` в HTTP 403, `ErrProfileNotFound` в HTTP 404, `ErrProfileInUse` в HTTP 409.
-- **`bid_handler.go`**: `POST /api/v1/tasks/{id}/bids` и `GET /api/v1/tasks/{id}/bids`.
+- **`middleware/logger.go`**, **`middleware/auth.go`** (`Auth`, `OptionalAuth`), **`response.go`**.
+- **`router.go` (`NewRouter`)**: публичные маршруты `/health`, `/api/v1/auth/*`, `GET /tasks`, `GET /masters`, `GET /masters/{id}`, `GET /master-services` (с `optAuthMW`), приватные маршруты с `authMW` и статика `web/` с `Cache-Control: no-cache`.
+- **`auth_handler.go`**: `POST /auth/register`, `/login`, `/refresh`, `/logout`.
+- **`task_handler.go`**: `POST/GET /tasks`, `PUT /tasks/{id}`, `POST /tasks/{id}/assign`, `/mark-completed`, `/complete`, `/cancel` (валидация `limit`/`offset`/`status`, батч-загрузка `my_review` без N+1).
+- **`master_handler.go`**: `GET/PUT /api/v1/master-profile/me`, `GET /api/v1/masters/{id}`, `GET /api/v1/master-services` (и alias `/masters`), `POST/PUT/DELETE /api/v1/master-services/{id}`.
+- **`bid_handler.go`**: `POST/GET /api/v1/tasks/{id}/bids`.
+- **`review_handler.go`**: `POST /api/v1/tasks/{id}/review`, `PUT/DELETE /api/v1/reviews/{id}`.
 
 ---
 
 ## 6. Утилиты и инфраструктура (`pkg`, `migrations`, Docker)
 
-- **`pkg/logger/logger.go`**: конфигурация `*logrus.Logger` (цветной текстовый вывод в `dev`, структурированный JSON в `prod`).
-- **`pkg/token/jwt.go` (`JWTManager`)**: выпуск (`Generate(userID)`) и проверка (`Parse(tokenStr)`) токенов по алгоритму `HS256`.
-- **`migrations/`** (для `golang-migrate`, пары `.up.sql` / `.down.sql`):
-  1. `000001_create_users_table.up.sql`: таблица `users` (`id`, `name`, `email UNIQUE`, `phone`, `password_hash`, `created_at`, `updated_at`).
-  2. `000002_create_tasks_table.up.sql`: таблица `tasks`, внешние ключи `author_id` и `master_id`, составной индекс `(status, category, created_at DESC)`.
-  3. `000003_create_master_profiles.up.sql`: таблица `master_profiles` с ограничением `UNIQUE (user_id)`.
-  4. `000004_create_task_bids.up.sql`: таблица `task_bids` с ограничением `UNIQUE (task_id, master_id)`.
-  5. `000005_add_master_contact_phone.up.sql`: таблица `master_profiles` (колонка `contact_phone`).
-  6. `000006_add_task_location_and_contacts.up.sql`: таблица `tasks` (колонки `district`, `contact_phone`, `work_address` с default '').
-- **`docker-compose.yml`**: поднимает `postgres` (PostgreSQL 16-alpine с healthcheck и volume) и одноразовый контейнер `migrate`.
-- **`go.mod`**: прямые зависимости (`jackc/pgx/v5`, `golang-jwt/jwt/v5`, `sirupsen/logrus`, `joho/godotenv`, `golang.org/x/crypto`).
-- **`.env` / `.gitignore`**: локальные секреты окружения и защита репозитория от утечки `.env` и бинарников.
+- **`pkg/logger/logger.go`**, **`pkg/token/jwt.go`**, **`pkg/token/refresh.go`**.
+- **`migrations/`**:
+  1–7. Базовые таблицы (`users`, `tasks`, `master_profiles`, `task_bids`, контакты, `refresh_tokens`).
+  8. `000008_rework_masters_tasks_reviews.up.sql`: разделение на `master_profiles` и `master_services` (с переносом данных), замена `tasks.master_id` на `assigned_master_id`, перенос `task_bids → task_responses`, создание `master_reviews`.
+- **`docker-compose.yml`**, **`go.mod`**, **`.env`**, **`.gitignore`**.

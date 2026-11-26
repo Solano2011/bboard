@@ -16,6 +16,7 @@ import (
 	"bboard/internal/usecase/auth"
 	"bboard/internal/usecase/bid"
 	"bboard/internal/usecase/master"
+	"bboard/internal/usecase/review"
 	"bboard/internal/usecase/task"
 	"bboard/pkg/logger"
 	"bboard/pkg/token"
@@ -24,67 +25,82 @@ import (
 )
 
 func main() {
-	// 1. Загружаем конфигурацию
+	// 1. Загружаем конфигурацию (.env и переменные окружения)
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
 		os.Exit(1)
 	}
 
-	// 2. Инициализируем структурированный логгер logrus
+	// 2. Инициализируем структурированный логгер
 	log := logger.New(cfg.LogLevel, cfg.IsProd)
 	log.WithField("env", cfg.AppEnv).Info("starting bboard API server")
 
-	// 3. Подключаемся к PostgreSQL с проверкой соединения
+	// 3. Подключаемся к PostgreSQL через пул соединений pgxpool
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	dbPool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
-		log.WithError(err).Fatal("failed to create postgres connection pool")
+		log.WithError(err).Fatal("failed to create PostgreSQL pool")
 	}
 	defer dbPool.Close()
 
 	if err := dbPool.Ping(ctx); err != nil {
-		log.WithError(err).Fatal("failed to ping postgres database")
+		log.WithError(err).Fatal("failed to ping PostgreSQL")
 	}
 	log.Info("connected to PostgreSQL")
 
 	// 4. Инициализируем инфраструктурные утилиты
-	jwtManager, err := token.NewJWTManager(cfg.JWTSecret, cfg.JWTTTL)
+	jwtManager, err := token.NewJWTManager(cfg.JWTSecret, cfg.AccessTokenTTL)
 	if err != nil {
 		log.WithError(err).Fatal("failed to initialize JWT manager")
 	}
 
 	// 5. Собираем слой репозиториев (Infrastructure)
 	userRepo := postgres.NewUserRepo(dbPool)
+	refreshTokenRepo := postgres.NewRefreshTokenRepo(dbPool)
 	taskRepo := postgres.NewTaskRepo(dbPool)
 	masterRepo := postgres.NewMasterRepo(dbPool)
 	bidRepo := postgres.NewBidRepo(dbPool)
+	reviewRepo := postgres.NewReviewRepo(dbPool)
 
 	// 6. Собираем слой бизнес-сценариев (UseCases)
-	registerUC := auth.NewRegisterUseCase(userRepo, log)
-	loginUC := auth.NewLoginUseCase(userRepo, jwtManager, log)
+	registerUC := auth.NewRegisterUseCase(userRepo, refreshTokenRepo, jwtManager, cfg.RefreshTokenTTL, log)
+	loginUC := auth.NewLoginUseCase(userRepo, refreshTokenRepo, jwtManager, cfg.RefreshTokenTTL, log)
+	refreshUC := auth.NewRefreshUseCase(userRepo, refreshTokenRepo, jwtManager, cfg.RefreshTokenTTL, log)
+	logoutUC := auth.NewLogoutUseCase(refreshTokenRepo, log)
 
 	createTaskUC := task.NewCreateTaskUseCase(taskRepo, userRepo, log)
 	listTasksUC := task.NewListTasksUseCase(taskRepo, log)
+	updateTaskUC := task.NewUpdateTaskUseCase(taskRepo, log)
 	assignMasterUC := task.NewAssignMasterUseCase(taskRepo, masterRepo, log)
+	markCompletedUC := task.NewMarkTaskCompletedUseCase(taskRepo, masterRepo, log)
 	completeTaskUC := task.NewCompleteTaskUseCase(taskRepo, log)
 	cancelTaskUC := task.NewCancelTaskUseCase(taskRepo, log)
 
-	createMasterUC := master.NewCreateProfileUseCase(masterRepo, userRepo, log)
-	listMastersUC := master.NewListProfilesUseCase(masterRepo, log)
-	deleteMasterUC := master.NewDeleteProfileUseCase(masterRepo, log)
+	upsertProfileUC := master.NewUpsertProfileUseCase(masterRepo, userRepo, log)
+	getMyProfileUC := master.NewGetMyProfileUseCase(masterRepo, log)
+	getPublicProfileUC := master.NewGetPublicProfileUseCase(masterRepo, reviewRepo, log)
+	createServiceUC := master.NewCreateServiceUseCase(masterRepo, log)
+	updateServiceUC := master.NewUpdateServiceUseCase(masterRepo, log)
+	deleteServiceUC := master.NewDeleteServiceUseCase(masterRepo, log)
+	listServicesUC := master.NewListServicesUseCase(masterRepo, log)
 
 	createBidUC := bid.NewCreateBidUseCase(bidRepo, taskRepo, masterRepo, log)
 	listBidsUC := bid.NewListBidsUseCase(bidRepo, taskRepo, log)
 
+	createReviewUC := review.NewCreateReviewUseCase(reviewRepo, taskRepo, log)
+	updateReviewUC := review.NewUpdateReviewUseCase(reviewRepo, log)
+	deleteReviewUC := review.NewDeleteReviewUseCase(reviewRepo, log)
+
 	// 7. Собираем слой доставки (Delivery / HTTP)
-	authHandler := deliveryHTTP.NewAuthHandler(registerUC, loginUC, log)
-	taskHandler := deliveryHTTP.NewTaskHandler(createTaskUC, listTasksUC, assignMasterUC, completeTaskUC, cancelTaskUC, log)
-	masterHandler := deliveryHTTP.NewMasterHandler(createMasterUC, listMastersUC, deleteMasterUC, masterRepo, log)
+	authHandler := deliveryHTTP.NewAuthHandler(registerUC, loginUC, refreshUC, logoutUC, cfg.RefreshTokenTTL, cfg.IsProd, log)
+	taskHandler := deliveryHTTP.NewTaskHandler(createTaskUC, listTasksUC, updateTaskUC, assignMasterUC, markCompletedUC, completeTaskUC, cancelTaskUC, masterRepo, reviewRepo, log)
+	masterHandler := deliveryHTTP.NewMasterHandler(upsertProfileUC, getMyProfileUC, getPublicProfileUC, createServiceUC, updateServiceUC, deleteServiceUC, listServicesUC, log)
 	bidHandler := deliveryHTTP.NewBidHandler(createBidUC, listBidsUC, log)
-	router := deliveryHTTP.NewRouter(authHandler, taskHandler, masterHandler, bidHandler, jwtManager, log)
+	reviewHandler := deliveryHTTP.NewReviewHandler(createReviewUC, updateReviewUC, deleteReviewUC, log)
+	router := deliveryHTTP.NewRouter(authHandler, taskHandler, masterHandler, bidHandler, reviewHandler, jwtManager, log)
 
 	// 8. Настраиваем HTTP-сервер с таймаутами
 	srv := &http.Server{

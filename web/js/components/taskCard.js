@@ -1,13 +1,9 @@
-const CATEGORY_LABELS = {
-  electric: "Электрика",
-  plumbing: "Сантехника",
-  earthworks: "Земляные работы",
-  repair: "Ремонт и отделка",
-};
+import { CATEGORY_LABELS } from "../constants/categories.js";
 
 const STATUS_LABELS = {
   open: "Открыта",
   in_progress: "В работе",
+  pending_completion: "Ожидает подтверждения",
   completed: "Выполнена",
   canceled: "Отменена",
 };
@@ -16,7 +12,9 @@ function escapeHtml(str) {
   return String(str ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 export function renderTaskCard(task, currentUser) {
@@ -31,6 +29,9 @@ export function renderTaskCard(task, currentUser) {
         <button class="btn btn-primary btn-sm" data-action="view-bids" data-task-id="${task.id}">
           Отклики и выбор мастера
         </button>
+        <button class="btn btn-secondary btn-sm" data-action="edit-task" data-task-id="${task.id}">
+          Редактировать
+        </button>
         <button class="btn btn-danger-outline btn-sm" data-action="cancel-task" data-task-id="${task.id}">
           Отменить
         </button>
@@ -38,17 +39,60 @@ export function renderTaskCard(task, currentUser) {
     } else if (!isGuest) {
       actionsHtml = `
         <button class="btn btn-primary btn-sm" data-action="open-bid" data-task-id="${task.id}" data-task-title="${escapeHtml(task.title)}">
-          Откликнуться (предложить цену)
+          Откликнуться
         </button>
       `;
     }
-  } else if (task.status === "in_progress" && isAuthor) {
+  } else if (task.status === "in_progress") {
+    if (task.is_assigned_to_me) {
+      actionsHtml += `
+        <button class="btn btn-success btn-sm" data-action="mark-completed" data-task-id="${task.id}">
+          Отметить выполненным
+        </button>
+      `;
+    }
+    if (isAuthor) {
+      actionsHtml += `
+        <button class="btn btn-success btn-sm" data-action="complete-task" data-task-id="${task.id}">
+          Завершить работу
+        </button>
+        <button class="btn btn-danger-outline btn-sm" data-action="cancel-task" data-task-id="${task.id}">
+          Отменить
+        </button>
+      `;
+    }
+  } else if (task.status === "pending_completion" && isAuthor) {
     actionsHtml = `
       <button class="btn btn-success btn-sm" data-action="complete-task" data-task-id="${task.id}">
-        Завершить работу
+        Подтвердить выполнение
       </button>
       <button class="btn btn-danger-outline btn-sm" data-action="cancel-task" data-task-id="${task.id}">
         Отменить
+      </button>
+    `;
+  } else if (task.status === "completed" && isAuthor) {
+    if (task.my_review) {
+      actionsHtml = `
+        <button class="btn btn-secondary btn-sm" data-action="edit-review" data-task-id="${task.id}">
+          Редактировать отзыв
+        </button>
+        <button class="btn btn-danger-outline btn-sm" data-action="delete-review" data-review-id="${task.my_review.id}">
+          Удалить отзыв
+        </button>
+      `;
+    } else {
+      actionsHtml = `
+        <button class="btn btn-primary btn-sm" data-action="create-review" data-task-id="${task.id}">
+          Оставить отзыв
+        </button>
+      `;
+    }
+  }
+
+  if (task.assigned_master_id) {
+    actionsHtml += `
+      <button class="btn btn-secondary btn-sm" data-action="view-master-profile" data-master-profile-id="${task.assigned_master_id}">
+        Профиль исполнителя
       </button>
     `;
   }
@@ -60,6 +104,16 @@ export function renderTaskCard(task, currentUser) {
         <div style="font-weight:600; margin-bottom:4px; color:var(--text-main, #1e293b);">🔒 Контакты и адрес:</div>
         ${task.contact_phone ? `<div>📞 Телефон: <a href="tel:${escapeHtml(task.contact_phone)}">${escapeHtml(task.contact_phone)}</a></div>` : ""}
         ${task.work_address ? `<div>📍 Точный адрес: ${escapeHtml(task.work_address)}</div>` : ""}
+      </div>
+    `;
+  }
+
+  let reviewHtml = "";
+  if (task.my_review) {
+    reviewHtml = `
+      <div class="task-review-box">
+        <div><strong>Ваш отзыв:</strong> ★ ${Number(task.my_review.rating)}/5</div>
+        ${task.my_review.comment ? `<div style="margin-top:4px;">${escapeHtml(task.my_review.comment)}</div>` : ""}
       </div>
     `;
   }
@@ -78,6 +132,7 @@ export function renderTaskCard(task, currentUser) {
         <h3 class="card-title">${escapeHtml(task.title)}</h3>
         <p class="card-desc">${escapeHtml(task.description)}</p>
         ${contactInfoHtml}
+        ${reviewHtml}
       </div>
 
       <div>

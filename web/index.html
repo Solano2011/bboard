@@ -18,6 +18,7 @@
       <nav class="nav-tabs" id="navTabs">
         <button class="nav-tab active" data-tab="tasks">Лента заказов</button>
         <button class="nav-tab" data-tab="masters">Каталог мастеров</button>
+        <button class="nav-tab" data-tab="cabinet" id="navTabCabinet" style="display:none">Мой кабинет</button>
       </nav>
 
       <div class="nav-actions" id="navActions">
@@ -33,10 +34,6 @@
       <div class="filters">
         <select id="filterCategory" class="input">
           <option value="">Все категории</option>
-          <option value="electric">Электрика</option>
-          <option value="plumbing">Сантехника</option>
-          <option value="earthworks">Земляные работы</option>
-          <option value="repair">Ремонт и отделка</option>
         </select>
 
         <input type="text" id="filterCity" class="input" placeholder="Город (например, Астрахань)" />
@@ -44,6 +41,7 @@
         <select id="filterStatus" class="input">
           <option value="open">Открытые задачи</option>
           <option value="in_progress">В работе</option>
+          <option value="pending_completion">Ожидает подтверждения</option>
           <option value="completed">Завершённые</option>
           <option value="canceled">Отменённые</option>
         </select>

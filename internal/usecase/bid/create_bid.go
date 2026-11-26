@@ -14,8 +14,8 @@ import (
 
 type CreateBidInput struct {
 	TaskID        int64
-	MasterID      int64
-	ProposedPrice int64
+	ActorUserID   int64
+	ProposedPrice *int64
 	Comment       string
 }
 
@@ -42,21 +42,26 @@ func NewCreateBidUseCase(
 
 func (uc *CreateBidUseCase) Execute(ctx context.Context, input CreateBidInput) (*bid.Bid, error) {
 	log := uc.log.WithFields(logrus.Fields{
-		"task_id":   input.TaskID,
-		"master_id": input.MasterID,
+		"task_id":       input.TaskID,
+		"actor_user_id": input.ActorUserID,
 	})
 
-	// 1. Проверяем, что у пользователя есть активная анкета мастера
-	profile, err := uc.masterRepo.GetByUserID(ctx, input.MasterID)
+	// 1. Проверяем, что у пользователя создан профиль мастера и есть хотя бы 1 активная услуга
+	profile, err := uc.masterRepo.GetProfileByUserID(ctx, input.ActorUserID)
 	if err != nil {
 		if errors.Is(err, master.ErrProfileNotFound) {
-			log.Warn("create bid rejected: user has no master profile")
+			log.Warn("create response rejected: user has no master profile")
 			return nil, bid.ErrMasterProfileNeeded
 		}
 		return nil, fmt.Errorf("verify master profile: %w", err)
 	}
-	if !profile.IsActive {
-		log.Warn("create bid rejected: master profile is inactive")
+
+	activeServicesCount, err := uc.masterRepo.CountActiveServices(ctx, profile.ID)
+	if err != nil {
+		return nil, fmt.Errorf("count active services: %w", err)
+	}
+	if activeServicesCount == 0 {
+		log.Warn("create response rejected: master has no active services")
 		return nil, bid.ErrMasterProfileNeeded
 	}
 
@@ -65,31 +70,40 @@ func (uc *CreateBidUseCase) Execute(ctx context.Context, input CreateBidInput) (
 	if err != nil {
 		return nil, err
 	}
-	if t.AuthorID == input.MasterID {
-		log.Warn("create bid rejected: self bid")
+	if t.AuthorID == input.ActorUserID {
+		log.Warn("create response rejected: self bid")
 		return nil, bid.ErrSelfBidNotAllowed
 	}
 	if t.Status != task.StatusOpen {
-		log.Warn("create bid rejected: task is not open")
+		log.Warn("create response rejected: task is not open")
 		return nil, bid.ErrTaskNotOpenForBids
 	}
 
 	// 3. Создаём доменную сущность отклика и сохраняем
-	newBid, err := bid.NewBid(input.TaskID, input.MasterID, input.ProposedPrice, input.Comment)
+	newBid, err := bid.NewBid(input.TaskID, profile.ID, input.ProposedPrice, input.Comment)
 	if err != nil {
-		log.WithError(err).Warn("create bid rejected: validation failed")
+		log.WithError(err).Warn("create response rejected: validation failed")
 		return nil, err
 	}
 
 	if err := uc.bidRepo.Create(ctx, newBid); err != nil {
 		if errors.Is(err, bid.ErrBidAlreadyExists) {
-			log.Warn("create bid rejected: duplicate bid")
+			log.Warn("create response rejected: duplicate response")
 			return nil, err
 		}
-		log.WithError(err).Error("failed to persist task bid")
-		return nil, fmt.Errorf("create bid: %w", err)
+		log.WithError(err).Error("failed to save task response")
+		return nil, fmt.Errorf("create task response: %w", err)
 	}
 
-	log.WithField("bid_id", newBid.ID).Info("task bid submitted")
+	newBid.MasterDisplayName = profile.DisplayName
+	newBid.MasterAvatarURL = profile.AvatarURL
+	newBid.MasterRatingAvg = profile.RatingAvg
+	newBid.MasterReviewsCount = profile.ReviewsCount
+	newBid.MasterCompletedOrdersCount = profile.CompletedOrdersCount
+
+	log.WithFields(logrus.Fields{
+		"response_id":       newBid.ID,
+		"master_profile_id": profile.ID,
+	}).Info("task response created")
 	return newBid, nil
 }

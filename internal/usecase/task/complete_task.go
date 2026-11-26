@@ -42,9 +42,9 @@ func (uc *CompleteTaskUseCase) Execute(ctx context.Context, input ChangeTaskStat
 		return nil, err
 	}
 
-	if err := uc.taskRepo.Update(ctx, t); err != nil {
-		log.WithError(err).Error("failed to update task status to completed")
-		return nil, fmt.Errorf("update task: %w", err)
+	if err := uc.taskRepo.CompleteAndIncrementMasterCounter(ctx, t); err != nil {
+		log.WithError(err).Error("failed to complete task and increment master counter")
+		return nil, fmt.Errorf("complete task: %w", err)
 	}
 
 	log.Info("task marked as completed")
