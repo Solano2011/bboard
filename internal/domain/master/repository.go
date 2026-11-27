@@ -18,6 +18,7 @@ type Repository interface {
 	GetProfileByUserID(ctx context.Context, userID int64) (*Profile, error)
 	UpdateProfile(ctx context.Context, p *Profile) error
 	DeleteProfile(ctx context.Context, id int64) error
+	DeleteProfileIfUnused(ctx context.Context, id int64) error
 	HasSharedTaskWithProfile(ctx context.Context, viewerUserID, profileID int64) (bool, error)
 
 	CreateService(ctx context.Context, s *Service) error

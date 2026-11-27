@@ -17,5 +17,6 @@ type Repository interface {
 	GetByID(ctx context.Context, id int64) (*Task, error)
 	List(ctx context.Context, filter ListFilter) ([]*Task, error)
 	Update(ctx context.Context, t *Task, allowedPrevStatuses ...Status) error
+	Delete(ctx context.Context, id int64, expectedStatuses ...Status) error
 	CompleteAndIncrementMasterCounter(ctx context.Context, t *Task) error
 }

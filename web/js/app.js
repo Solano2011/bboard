@@ -6,17 +6,20 @@ import { ModalManager, showToast } from "./components/modals.js";
 import { CATEGORIES, CATEGORY_LABELS, renderCategoryOptions } from "./constants/categories.js";
 
 const modal = new ModalManager();
+let lastOpenedProfileServices = [];
+
 api.setTokenProvider(() => store.state.token);
 api.setTokenUpdatedHandler((accessToken, user) => {
   store.setSession(accessToken, user || store.state.user);
 });
 api.setUnauthorizedHandler(() => {
   if (store.state.token) {
-    const wasCabinet = store.state.activeTab === "cabinet";
+    const wasRestrictedTab =
+      store.state.activeTab === "cabinet" || store.state.activeTab === "admin";
     store.clearSession();
     modal.close();
     showToast("Сессия истекла, войдите заново", "info");
-    if (wasCabinet) {
+    if (wasRestrictedTab) {
       loadData();
     }
   }
@@ -29,6 +32,20 @@ function escapeHtml(str) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function isModOrAdmin(user) {
+  return Boolean(user && (user.role === "moderator" || user.role === "admin"));
+}
+
+function formatRoleBadge(role) {
+  if (role === "admin") {
+    return `<span class="role-badge role-admin">Администратор</span>`;
+  }
+  if (role === "moderator") {
+    return `<span class="role-badge role-moderator">Модератор</span>`;
+  }
+  return `<span class="role-badge role-user">Пользователь</span>`;
 }
 
 function normalizePhone(raw, required = false) {
@@ -51,7 +68,7 @@ function normalizePhone(raw, required = false) {
 
 // --- Data Loaders ---
 async function loadData() {
-  const { activeTab, filters, user } = store.state;
+  const { activeTab, filters, user, adminSearch } = store.state;
   try {
     if (activeTab === "tasks") {
       const tasks = await api.listTasks(filters);
@@ -74,6 +91,13 @@ async function loadData() {
           throw err;
         }
       }
+    } else if (activeTab === "admin") {
+      if (!user || user.role !== "admin") {
+        store.setState({ activeTab: "tasks", adminUsers: [] });
+        return;
+      }
+      const users = await api.listAdminUsers({ search: adminSearch, limit: 50, offset: 0 });
+      store.setState({ adminUsers: users });
     }
   } catch (err) {
     showToast(err.message, "error");
@@ -85,24 +109,30 @@ function renderNavbar(state) {
   const navActions = document.getElementById("navActions");
   const primaryCta = document.getElementById("primaryCta");
   const navTabCabinet = document.getElementById("navTabCabinet");
+  const navTabAdmin = document.getElementById("navTabAdmin");
   const filtersBar = document.querySelector(".filters");
 
   if (navTabCabinet) {
     navTabCabinet.style.display = state.user ? "inline-block" : "none";
+  }
+  if (navTabAdmin) {
+    navTabAdmin.style.display = state.user?.role === "admin" ? "inline-block" : "none";
   }
 
   document.querySelectorAll(".nav-tab").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.tab === state.activeTab);
   });
 
+  const hideFilters = state.activeTab === "cabinet" || state.activeTab === "admin";
   if (filtersBar) {
-    filtersBar.style.display = state.activeTab === "cabinet" ? "none" : "flex";
+    filtersBar.style.display = hideFilters ? "none" : "flex";
   }
   document.getElementById("filterStatus").style.display = state.activeTab === "tasks" ? "inline-block" : "none";
 
   if (state.user) {
+    const rolePill = state.user.role && state.user.role !== "user" ? ` ${formatRoleBadge(state.user.role)}` : "";
     navActions.innerHTML = `
-      <span class="user-pill">👤 ${escapeHtml(state.user.name)} (ID #${state.user.id})</span>
+      <span class="user-pill">👤 ${escapeHtml(state.user.name)} (ID #${state.user.id})${rolePill}</span>
       <button class="btn btn-secondary btn-sm" id="btnLogout">Выйти</button>
     `;
     if (state.activeTab === "tasks") {
@@ -202,6 +232,13 @@ function renderCabinet(state) {
           <button class="btn btn-primary" style="width:100%" type="submit">
             ${p ? "Сохранить профиль" : "Создать профиль мастера"}
           </button>
+          ${
+            p
+              ? `<button class="btn btn-danger-outline" style="width:100%; margin-top:10px;" type="button" id="btnDeleteMyProfile">
+                   Удалить анкету мастера
+                 </button>`
+              : ""
+          }
         </form>
       </section>
 
@@ -217,6 +254,63 @@ function renderCabinet(state) {
         ${servicesHtml}
       </section>
     </div>
+  `;
+}
+
+function renderAdminUsers(state) {
+  const users = state.adminUsers || [];
+  const rowsHtml = users.length
+    ? users
+        .map((u) => {
+          const isSelf = state.user && u.id === state.user.id;
+          const isAdminUser = u.role === "admin";
+          let actionHtml = `<span style="color:var(--text-muted); font-size:12px;">Недоступно</span>`;
+          if (!isSelf && !isAdminUser) {
+            actionHtml =
+              u.role === "moderator"
+                ? `<button class="btn btn-danger-outline btn-sm" data-action="set-user-role" data-user-id="${u.id}" data-role="user">Снять модератора</button>`
+                : `<button class="btn btn-primary btn-sm" data-action="set-user-role" data-user-id="${u.id}" data-role="moderator">Назначить модератором</button>`;
+          }
+
+          return `
+            <tr>
+              <td>#${u.id}</td>
+              <td>${escapeHtml(u.name)}</td>
+              <td>${escapeHtml(u.email)}</td>
+              <td>${formatRoleBadge(u.role)}</td>
+              <td>${actionHtml}</td>
+            </tr>
+          `;
+        })
+        .join("")
+    : `<tr><td colspan="5" style="text-align:center; color:var(--text-secondary);">Пользователи не найдены</td></tr>`;
+
+  return `
+    <section class="admin-panel">
+      <div class="cabinet-panel-header">
+        <h3>Управление пользователями и ролями</h3>
+      </div>
+      <form id="adminSearchForm" class="admin-search-row">
+        <input class="input" style="flex:1; min-width:220px;" name="search" placeholder="Поиск по имени или email..." value="${escapeHtml(state.adminSearch || "")}" />
+        <button class="btn btn-secondary" type="submit">Найти</button>
+      </form>
+      <div style="overflow-x:auto;">
+        <table class="admin-users-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Имя</th>
+              <th>Email</th>
+              <th>Роль</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsHtml}
+          </tbody>
+        </table>
+      </div>
+    </section>
   `;
 }
 
@@ -259,6 +353,20 @@ function renderGrid(state) {
     return;
   }
 
+  if (state.activeTab === "admin") {
+    grid.innerHTML = renderAdminUsers(state);
+    const searchForm = document.getElementById("adminSearchForm");
+    if (searchForm) {
+      searchForm.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        store.setState({ adminSearch: (fd.get("search") || "").trim() });
+        loadData();
+      });
+    }
+    return;
+  }
+
   if (state.activeTab === "tasks") {
     if (!state.tasks.length) {
       grid.innerHTML = `<div class="empty-state">Заказов по выбранным фильтрам пока нет</div>`;
@@ -270,7 +378,7 @@ function renderGrid(state) {
       grid.innerHTML = `<div class="empty-state">Анкет услуг по выбранным фильтрам пока нет</div>`;
       return;
     }
-    grid.innerHTML = state.masters.map((m) => renderMasterCard(m)).join("");
+    grid.innerHTML = state.masters.map((m) => renderMasterCard(m, state.user)).join("");
   }
 }
 
@@ -414,13 +522,15 @@ function openTaskFormModal(existingTask = null) {
   });
 }
 
-function openServiceFormModal(existingService = null) {
+function openServiceFormModal(existingService = null, { isModeration = false, onSuccess = null } = {}) {
   const isEdit = Boolean(existingService);
-  const takenCategories = new Set(
-    (store.state.myServices || [])
-      .filter((s) => s.is_active && (!isEdit || s.id !== existingService.id))
-      .map((s) => s.category)
-  );
+  const takenCategories = isModeration
+    ? new Set()
+    : new Set(
+        (store.state.myServices || [])
+          .filter((s) => s.is_active && (!isEdit || s.id !== existingService.id))
+          .map((s) => s.category)
+      );
 
   const selectedCategory = isEdit
     ? existingService.category
@@ -490,7 +600,11 @@ function openServiceFormModal(existingService = null) {
         await api.createMasterService(payload);
         showToast("Анкета услуги добавлена!", "success");
       }
-      modal.close();
+      if (onSuccess) {
+        await onSuccess();
+      } else {
+        modal.close();
+      }
       loadData();
     } catch (err) {
       showToast(err.message, "error");
@@ -504,6 +618,9 @@ async function openMasterProfileModal(profileId) {
     const p = data.profile;
     const services = data.services || [];
     const reviews = data.reviews || [];
+    lastOpenedProfileServices = services;
+
+    const modAccess = isModOrAdmin(store.state.user);
 
     const avatarHtml = p.avatar_url
       ? `<img class="profile-avatar" src="${escapeHtml(p.avatar_url)}" alt="${escapeHtml(p.display_name)}" />`
@@ -533,7 +650,15 @@ async function openMasterProfileModal(profileId) {
               <strong>от ${Number(s.price).toLocaleString("ru-RU")} ₽</strong>
             </div>
             <div style="font-weight:600; margin-bottom:4px;">${escapeHtml(s.title)}</div>
-            <div style="font-size:13px; color:var(--text-secondary);">${escapeHtml(s.experience_description || "")}</div>
+            <div style="font-size:13px; color:var(--text-secondary); margin-bottom:8px;">${escapeHtml(s.experience_description || "")}</div>
+            ${
+              modAccess
+                ? `<div style="display:flex; gap:8px;">
+                     <button class="btn btn-secondary btn-sm" data-action="edit-profile-service" data-service-id="${s.id}" data-profile-id="${profileId}">Редактировать</button>
+                     <button class="btn btn-danger-outline btn-sm" data-action="delete-profile-service" data-service-id="${s.id}" data-profile-id="${profileId}">Удалить</button>
+                   </div>`
+                : ""
+            }
           </div>`
           )
           .join("")
@@ -548,7 +673,14 @@ async function openMasterProfileModal(profileId) {
               <strong>${escapeHtml(rev.author_name || `Заказчик #${rev.author_user_id}`)}</strong>
               <span class="tag rating-badge">★ ${Number(rev.rating)}/5</span>
             </div>
-            ${rev.comment ? `<div style="font-size:13px; color:var(--text-secondary);">${escapeHtml(rev.comment)}</div>` : ""}
+            ${rev.comment ? `<div style="font-size:13px; color:var(--text-secondary); margin-bottom:6px;">${escapeHtml(rev.comment)}</div>` : ""}
+            ${
+              modAccess
+                ? `<button class="btn btn-danger-outline btn-sm" data-action="delete-review" data-review-id="${rev.id}" data-profile-id="${profileId}">
+                     Удалить отзыв
+                   </button>`
+                : ""
+            }
           </div>`
           )
           .join("")
@@ -619,6 +751,11 @@ function openBidModal(taskId, taskTitle) {
 async function openViewBidsModal(taskId) {
   try {
     const bids = await api.listTaskBids(taskId);
+    const task = store.state.tasks.find((item) => item.id === Number(taskId));
+    const canAssign = Boolean(
+      task && store.state.user && task.author_id === store.state.user.id && task.status === "open"
+    );
+
     const listHtml = bids.length
       ? bids
           .map(
@@ -636,9 +773,13 @@ async function openViewBidsModal(taskId) {
               <button class="btn btn-secondary btn-sm" data-action="view-master-profile" data-master-profile-id="${b.master_profile_id}">
                 Профиль мастера
               </button>
-              <button class="btn btn-primary btn-sm" data-assign-task="${taskId}" data-assign-master="${b.master_profile_id}">
-                Выбрать исполнителем
-              </button>
+              ${
+                canAssign
+                  ? `<button class="btn btn-primary btn-sm" data-assign-task="${taskId}" data-assign-master="${b.master_profile_id}">
+                       Выбрать исполнителем
+                     </button>`
+                  : ""
+              }
             </div>
           </div>`
           )
@@ -733,9 +874,6 @@ document.addEventListener("click", async (e) => {
       // Локальную сессию сбрасываем даже при сетевой ошибке
     } finally {
       store.clearSession();
-      if (store.state.activeTab === "cabinet") {
-        store.setState({ activeTab: "tasks", myProfile: null, myServices: [] });
-      }
       showToast("Вы вышли из аккаунта");
       loadData();
     }
@@ -746,6 +884,17 @@ document.addEventListener("click", async (e) => {
     loadData();
   } else if (target.id === "btnAddService") {
     openServiceFormModal();
+  } else if (target.id === "btnDeleteMyProfile") {
+    if (!confirm("Вы уверены, что хотите удалить свою анкету мастера?")) {
+      return;
+    }
+    try {
+      await api.deleteMyMasterProfile();
+      showToast("Анкета мастера удалена", "success");
+      loadData();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
   } else if (target.id === "btnApplyFilters") {
     store.setState({
       filters: {
@@ -774,6 +923,48 @@ document.addEventListener("click", async (e) => {
     } catch (err) {
       showToast(err.message, "error");
     }
+  } else if (target.dataset.action === "edit-any-service") {
+    const svcId = Number(target.dataset.serviceId);
+    const svc = (store.state.masters || []).find((item) => item.id === svcId);
+    if (svc) {
+      openServiceFormModal(svc, { isModeration: true });
+    }
+  } else if (target.dataset.action === "delete-any-service") {
+    if (!confirm("Удалить эту анкету услуги мастера?")) {
+      return;
+    }
+    try {
+      await api.deleteMasterService(target.dataset.serviceId);
+      showToast("Анкета услуги удалена", "success");
+      loadData();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  } else if (target.dataset.action === "edit-profile-service") {
+    const svcId = Number(target.dataset.serviceId);
+    const profileId = target.dataset.profileId;
+    const svc = lastOpenedProfileServices.find((item) => item.id === svcId);
+    if (svc) {
+      openServiceFormModal(svc, {
+        isModeration: true,
+        onSuccess: async () => {
+          await openMasterProfileModal(profileId);
+        },
+      });
+    }
+  } else if (target.dataset.action === "delete-profile-service") {
+    if (!confirm("Удалить эту анкету услуги мастера?")) {
+      return;
+    }
+    const profileId = target.dataset.profileId;
+    try {
+      await api.deleteMasterService(target.dataset.serviceId);
+      showToast("Анкета услуги удалена", "success");
+      await openMasterProfileModal(profileId);
+      loadData();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
   } else if (target.dataset.action === "open-bid") {
     openBidModal(target.dataset.taskId, target.dataset.taskTitle);
   } else if (target.dataset.action === "view-bids") {
@@ -783,6 +974,23 @@ document.addEventListener("click", async (e) => {
     const task = store.state.tasks.find((item) => item.id === taskId);
     if (task) {
       openTaskFormModal(task);
+    }
+  } else if (target.dataset.action === "delete-task") {
+    const taskId = Number(target.dataset.taskId);
+    const task = store.state.tasks.find((item) => item.id === taskId);
+    const isModDelete = task && store.state.user && task.author_id !== store.state.user.id;
+    const msg = isModDelete
+      ? "Вы удаляете чужое объявление как модератор. Это действие необратимо. Продолжить?"
+      : "Вы уверены, что хотите удалить это объявление?";
+    if (!confirm(msg)) {
+      return;
+    }
+    try {
+      await api.deleteTask(taskId);
+      showToast("Объявление удалено", "success");
+      loadData();
+    } catch (err) {
+      showToast(err.message, "error");
     }
   } else if (target.dataset.action === "mark-completed") {
     try {
@@ -817,12 +1025,33 @@ document.addEventListener("click", async (e) => {
       openReviewFormModal(taskId, task.my_review);
     }
   } else if (target.dataset.action === "delete-review") {
-    if (!confirm("Удалить ваш отзыв?")) {
+    if (!confirm("Удалить этот отзыв?")) {
       return;
     }
+    const profileId = target.dataset.profileId;
     try {
       await api.deleteReview(target.dataset.reviewId);
       showToast("Отзыв удалён");
+      if (profileId) {
+        await openMasterProfileModal(profileId);
+      }
+      loadData();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  } else if (target.dataset.action === "set-user-role") {
+    const userId = target.dataset.userId;
+    const role = target.dataset.role;
+    const confirmText =
+      role === "moderator"
+        ? "Назначить этого пользователя модератором?"
+        : "Снять права модератора с этого пользователя?";
+    if (!confirm(confirmText)) {
+      return;
+    }
+    try {
+      await api.updateUserRole(userId, role);
+      showToast("Роль пользователя обновлена", "success");
       loadData();
     } catch (err) {
       showToast(err.message, "error");
@@ -838,7 +1067,10 @@ if (filterCategorySelect) {
 async function validateSessionOnStartup() {
   if (!store.state.token) return;
   try {
-    await api.me();
+    const meUser = await api.me();
+    if (meUser && meUser.id) {
+      store.setSession(store.state.token, meUser);
+    }
   } catch {
     // При протухшем refresh_token сессия уже сброшена в unauthorizedHandler
   }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"bboard/internal/domain/task"
+	"bboard/internal/domain/user"
 
 	"github.com/sirupsen/logrus"
 )
@@ -21,18 +22,19 @@ func NewCancelTaskUseCase(taskRepo task.Repository, log *logrus.Logger) *CancelT
 	}
 }
 
-func (uc *CancelTaskUseCase) Execute(ctx context.Context, input ChangeTaskStatusInput) (*task.Task, error) {
+func (uc *CancelTaskUseCase) Execute(ctx context.Context, taskID, actorID int64, actorRole user.Role) (*task.Task, error) {
 	log := uc.log.WithFields(logrus.Fields{
-		"task_id":  input.TaskID,
-		"actor_id": input.ActorID,
+		"task_id":    taskID,
+		"actor_id":   actorID,
+		"actor_role": actorRole,
 	})
 
-	t, err := uc.taskRepo.GetByID(ctx, input.TaskID)
+	t, err := uc.taskRepo.GetByID(ctx, taskID)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := t.Cancel(input.ActorID); err != nil {
+	if err := t.Cancel(actorID, actorRole); err != nil {
 		log.WithError(err).Warn("cancel task rejected by domain rules")
 		return nil, err
 	}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	domaincat "bboard/internal/domain/category"
+	"bboard/internal/domain/user"
 )
 
 type Status string
@@ -166,9 +167,10 @@ func NewTask(
 	}, nil
 }
 
-// Update обновляет поля открытого объявления с проверкой прав автора.
+// Update обновляет поля объявления с учётом прав автора или модератора/админа.
 func (t *Task) Update(
 	actorID int64,
+	actorRole user.Role,
 	title string,
 	description string,
 	category string,
@@ -178,10 +180,15 @@ func (t *Task) Update(
 	workAddress string,
 	budget int64,
 ) error {
-	if t.AuthorID != actorID {
+	isMod := actorRole.IsModeratorOrAdmin()
+	if !isMod && t.AuthorID != actorID {
 		return ErrForbiddenAction
 	}
-	if t.Status != StatusOpen {
+	if isMod {
+		if t.Status == StatusCompleted || t.Status == StatusCanceled {
+			return ErrInvalidStatus
+		}
+	} else if t.Status != StatusOpen {
 		return ErrInvalidStatus
 	}
 
@@ -235,9 +242,9 @@ func (t *Task) Complete(actorID int64) error {
 	return nil
 }
 
-// Cancel отменяет объявление.
-func (t *Task) Cancel(actorID int64) error {
-	if t.AuthorID != actorID {
+// Cancel отменяет объявление (доступно автору или модератору/администратору).
+func (t *Task) Cancel(actorID int64, actorRole user.Role) error {
+	if !actorRole.IsModeratorOrAdmin() && t.AuthorID != actorID {
 		return ErrForbiddenAction
 	}
 	if t.Status == StatusCompleted || t.Status == StatusCanceled {
@@ -246,6 +253,20 @@ func (t *Task) Cancel(actorID int64) error {
 
 	t.Status = StatusCanceled
 	t.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+// CanDelete проверяет права на удаление объявления.
+func (t *Task) CanDelete(actorID int64, actorRole user.Role) error {
+	if actorRole.IsModeratorOrAdmin() {
+		return nil
+	}
+	if t.AuthorID != actorID {
+		return ErrForbiddenAction
+	}
+	if t.Status != StatusOpen {
+		return ErrInvalidStatus
+	}
 	return nil
 }
 

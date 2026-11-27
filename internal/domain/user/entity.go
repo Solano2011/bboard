@@ -5,21 +5,42 @@ import (
 	"time"
 )
 
+type Role string
+
+const (
+	RoleUser      Role = "user"
+	RoleModerator Role = "moderator"
+	RoleAdmin     Role = "admin"
+)
+
+// IsValid проверяет, является ли роль допустимой в системе.
+func (r Role) IsValid() bool {
+	return r == RoleUser || r == RoleModerator || r == RoleAdmin
+}
+
+// IsModeratorOrAdmin возвращает true для модератора и администратора.
+func (r Role) IsModeratorOrAdmin() bool {
+	return r == RoleModerator || r == RoleAdmin
+}
+
+// IsAdmin возвращает true только для администратора.
+func (r Role) IsAdmin() bool {
+	return r == RoleAdmin
+}
+
 // User представляет зарегистрированного пользователя платформы.
-// Один аккаунт может выступать и как заказчик (создавать задачи),
-// и как исполнитель (если у него заполнена анкета мастера).
 type User struct {
 	ID           int64
 	Name         string
 	Email        string
 	Phone        string
+	Role         Role
 	PasswordHash string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
 
 // NewUser создаёт и валидирует новую доменную сущность пользователя перед сохранением.
-// На вход ожидается уже захэшированный пароль (passwordHash).
 func NewUser(name, email, phone, passwordHash string) (*User, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -44,10 +65,34 @@ func NewUser(name, email, phone, passwordHash string) (*User, error) {
 		Name:         name,
 		Email:        email,
 		Phone:        strings.TrimSpace(phone),
+		Role:         RoleUser,
 		PasswordHash: passwordHash,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}, nil
+}
+
+// ChangeModeratorRole изменяет роль пользователя между user и moderator (доступно только admin).
+func (u *User) ChangeModeratorRole(actorID int64, actorRole Role, newRole Role) error {
+	if !actorRole.IsAdmin() {
+		return ErrForbiddenRoleChange
+	}
+	if u.ID == actorID {
+		return ErrCannotChangeOwnRole
+	}
+	if u.Role == RoleAdmin {
+		return ErrForbiddenRoleChange
+	}
+	if !newRole.IsValid() {
+		return ErrInvalidRole
+	}
+	if newRole == RoleAdmin {
+		return ErrForbiddenRoleChange
+	}
+
+	u.Role = newRole
+	u.UpdatedAt = time.Now().UTC()
+	return nil
 }
 
 // UpdateProfile обновляет контактные данные пользователя.

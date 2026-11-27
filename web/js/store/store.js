@@ -16,6 +16,8 @@ class Store {
       masters: [],
       myProfile: null,
       myServices: [],
+      adminUsers: [],
+      adminSearch: "",
       loading: false,
     };
     this.listeners = new Set();
@@ -38,12 +40,15 @@ class Store {
 
   clearSession() {
     localStorage.removeItem(STORAGE_KEY);
+    const shouldResetTab = this.state.activeTab === "cabinet" || this.state.activeTab === "admin";
     this.setState({
       token: null,
       user: null,
       myProfile: null,
       myServices: [],
-      activeTab: this.state.activeTab === "cabinet" ? "tasks" : this.state.activeTab,
+      adminUsers: [],
+      adminSearch: "",
+      activeTab: shouldResetTab ? "tasks" : this.state.activeTab,
     });
   }
 

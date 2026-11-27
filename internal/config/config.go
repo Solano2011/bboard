@@ -20,6 +20,7 @@ type Config struct {
 	JWTSecret       string
 	AccessTokenTTL  time.Duration
 	RefreshTokenTTL time.Duration
+	AdminEmail      string
 }
 
 // Load загружает конфигурацию из файла .env (если существует) и переменных окружения.
@@ -61,6 +62,7 @@ func Load() (*Config, error) {
 		JWTSecret:       jwtSecret,
 		AccessTokenTTL:  accessTokenTTL,
 		RefreshTokenTTL: refreshTokenTTL,
+		AdminEmail:      strings.ToLower(strings.TrimSpace(os.Getenv("ADMIN_EMAIL"))),
 	}, nil
 }
 

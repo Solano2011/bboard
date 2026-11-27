@@ -211,6 +211,74 @@ func (r *TaskRepo) CompleteAndIncrementMasterCounter(ctx context.Context, t *tas
 	return nil
 }
 
+func (r *TaskRepo) Delete(ctx context.Context, id int64, expectedStatuses ...task.Status) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin delete task tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var currentStatus task.Status
+	var assignedMasterID *int64
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT status, assigned_master_id FROM tasks WHERE id = $1 FOR UPDATE`,
+		id,
+	).Scan(&currentStatus, &assignedMasterID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return task.ErrTaskNotFound
+		}
+		return fmt.Errorf("lock task for delete: %w", err)
+	}
+
+	if len(expectedStatuses) > 0 {
+		allowed := false
+		for _, s := range expectedStatuses {
+			if currentStatus == s {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return task.ErrInvalidStatus
+		}
+	}
+
+	// Строго до DELETE FROM tasks (каскадного удаления master_reviews) блокируем master_profiles FOR UPDATE,
+	// чтобы порядок блокировок совпадал с ReviewRepo и исключал deadlock (40P01).
+	if currentStatus == task.StatusCompleted && assignedMasterID != nil {
+		if err := lockMasterProfileTx(ctx, tx, *assignedMasterID); err != nil {
+			return fmt.Errorf("lock assigned master profile before task delete: %w", err)
+		}
+	}
+
+	cmdTag, err := tx.Exec(ctx, `DELETE FROM tasks WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete task: %w", err)
+	}
+	if cmdTag.RowsAffected() == 0 {
+		return task.ErrTaskNotFound
+	}
+
+	if currentStatus == task.StatusCompleted && assignedMasterID != nil {
+		if _, err := tx.Exec(
+			ctx,
+			`UPDATE master_profiles SET completed_orders_count = GREATEST(completed_orders_count - 1, 0), updated_at = NOW() WHERE id = $1`,
+			*assignedMasterID,
+		); err != nil {
+			return fmt.Errorf("decrement master completed_orders_count: %w", err)
+		}
+		if err := recalculateMasterRatingTx(ctx, tx, *assignedMasterID); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit delete task tx: %w", err)
+	}
+	return nil
+}
+
 func mapTaskPgError(err error, action string) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {

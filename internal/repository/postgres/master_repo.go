@@ -129,6 +129,71 @@ func (r *MasterRepo) DeleteProfile(ctx context.Context, id int64) error {
 	return nil
 }
 
+func (r *MasterRepo) DeleteProfileIfUnused(ctx context.Context, id int64) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin delete profile tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var completedCount, reviewsCount int
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT completed_orders_count, reviews_count FROM master_profiles WHERE id = $1 FOR UPDATE`,
+		id,
+	).Scan(&completedCount, &reviewsCount); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return master.ErrProfileNotFound
+		}
+		return fmt.Errorf("lock master profile for delete: %w", err)
+	}
+
+	if completedCount > 0 || reviewsCount > 0 {
+		return master.ErrProfileInUse
+	}
+
+	var hasTasks bool
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT EXISTS (SELECT 1 FROM tasks WHERE assigned_master_id = $1)`,
+		id,
+	).Scan(&hasTasks); err != nil {
+		return fmt.Errorf("check tasks for master profile: %w", err)
+	}
+	if hasTasks {
+		return master.ErrProfileInUse
+	}
+
+	var hasReviews bool
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT EXISTS (SELECT 1 FROM master_reviews WHERE master_profile_id = $1)`,
+		id,
+	).Scan(&hasReviews); err != nil {
+		return fmt.Errorf("check reviews for master profile: %w", err)
+	}
+	if hasReviews {
+		return master.ErrProfileInUse
+	}
+
+	cmdTag, err := tx.Exec(ctx, `DELETE FROM master_profiles WHERE id = $1`, id)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return master.ErrProfileInUse
+		}
+		return fmt.Errorf("delete master profile: %w", err)
+	}
+	if cmdTag.RowsAffected() == 0 {
+		return master.ErrProfileNotFound
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit delete master profile tx: %w", err)
+	}
+	return nil
+}
+
 func (r *MasterRepo) HasSharedTaskWithProfile(ctx context.Context, viewerUserID, profileID int64) (bool, error) {
 	if viewerUserID <= 0 || profileID <= 0 {
 		return false, nil

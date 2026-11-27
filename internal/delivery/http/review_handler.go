@@ -134,6 +134,7 @@ func (h *ReviewHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
 		return
 	}
+	actorRole, _ := middleware.UserRoleFromContext(r.Context())
 
 	reviewID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || reviewID <= 0 {
@@ -144,6 +145,7 @@ func (h *ReviewHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	if err := h.deleteUC.Execute(r.Context(), reviewUC.DeleteReviewInput{
 		ReviewID:    reviewID,
 		ActorUserID: actorUserID,
+		ActorRole:   actorRole,
 	}); err != nil {
 		h.handleDomainError(w, err)
 		return

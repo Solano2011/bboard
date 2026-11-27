@@ -16,12 +16,16 @@ export function formatRating(ratingAvg, reviewsCount) {
   return `★ ${Number(ratingAvg).toFixed(1)} (${reviewsCount})`;
 }
 
-export function renderMasterCard(serviceItem) {
+export function renderMasterCard(serviceItem, currentUser) {
   const ratingText = formatRating(serviceItem.rating_avg, serviceItem.reviews_count);
   const locationParts = [serviceItem.master_city || "Город не указан"];
   if (serviceItem.master_district) {
     locationParts.push(`р-н ${serviceItem.master_district}`);
   }
+
+  const isModeratorOrAdmin = Boolean(
+    currentUser && (currentUser.role === "moderator" || currentUser.role === "admin")
+  );
 
   return `
     <article class="card">
@@ -46,6 +50,16 @@ export function renderMasterCard(serviceItem) {
           <button class="btn btn-secondary btn-sm" data-action="view-master-profile" data-master-profile-id="${serviceItem.master_profile_id}">
             Профиль мастера
           </button>
+          ${
+            isModeratorOrAdmin
+              ? `<button class="btn btn-secondary btn-sm" data-action="edit-any-service" data-service-id="${serviceItem.id}">
+                   Редактировать
+                 </button>
+                 <button class="btn btn-danger-outline btn-sm" data-action="delete-any-service" data-service-id="${serviceItem.id}">
+                   Удалить
+                 </button>`
+              : ""
+          }
         </div>
       </div>
     </article>

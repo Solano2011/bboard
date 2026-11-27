@@ -30,6 +30,7 @@ type RegisterUseCase struct {
 	refreshRepo domainAuth.RefreshTokenRepository
 	tokenGen    TokenGenerator
 	refreshTTL  time.Duration
+	adminEmail  string
 	log         *logrus.Entry
 }
 
@@ -39,6 +40,7 @@ func NewRegisterUseCase(
 	refreshRepo domainAuth.RefreshTokenRepository,
 	tokenGen TokenGenerator,
 	refreshTTL time.Duration,
+	adminEmail string,
 	log *logrus.Logger,
 ) *RegisterUseCase {
 	return &RegisterUseCase{
@@ -46,6 +48,7 @@ func NewRegisterUseCase(
 		refreshRepo: refreshRepo,
 		tokenGen:    tokenGen,
 		refreshTTL:  refreshTTL,
+		adminEmail:  strings.ToLower(strings.TrimSpace(adminEmail)),
 		log:         log.WithField("usecase", "auth.register"),
 	}
 }
@@ -80,6 +83,9 @@ func (uc *RegisterUseCase) Execute(ctx context.Context, input RegisterInput) (*A
 	if err != nil {
 		log.WithError(err).Warn("registration rejected: domain validation failed")
 		return nil, err
+	}
+	if uc.adminEmail != "" && newUser.Email == uc.adminEmail {
+		newUser.Role = user.RoleAdmin
 	}
 
 	if err := uc.userRepo.Create(ctx, newUser); err != nil {

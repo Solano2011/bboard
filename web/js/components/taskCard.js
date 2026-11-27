@@ -18,16 +18,19 @@ function escapeHtml(str) {
 }
 
 export function renderTaskCard(task, currentUser) {
-  const isAuthor = currentUser && currentUser.id === task.author_id;
+  const isAuthor = Boolean(currentUser && currentUser.id === task.author_id);
+  const isModeratorOrAdmin = Boolean(
+    currentUser && (currentUser.role === "moderator" || currentUser.role === "admin")
+  );
   const isGuest = !currentUser;
 
   let actionsHtml = "";
 
   if (task.status === "open") {
-    if (isAuthor) {
-      actionsHtml = `
+    if (isAuthor || isModeratorOrAdmin) {
+      actionsHtml += `
         <button class="btn btn-primary btn-sm" data-action="view-bids" data-task-id="${task.id}">
-          Отклики и выбор мастера
+          ${isAuthor ? "Отклики и выбор мастера" : "Отклики"}
         </button>
         <button class="btn btn-secondary btn-sm" data-action="edit-task" data-task-id="${task.id}">
           Редактировать
@@ -35,9 +38,13 @@ export function renderTaskCard(task, currentUser) {
         <button class="btn btn-danger-outline btn-sm" data-action="cancel-task" data-task-id="${task.id}">
           Отменить
         </button>
+        <button class="btn btn-danger-outline btn-sm" data-action="delete-task" data-task-id="${task.id}">
+          Удалить
+        </button>
       `;
-    } else if (!isGuest) {
-      actionsHtml = `
+    }
+    if (!isAuthor && !isGuest) {
+      actionsHtml += `
         <button class="btn btn-primary btn-sm" data-action="open-bid" data-task-id="${task.id}" data-task-title="${escapeHtml(task.title)}">
           Откликнуться
         </button>
@@ -56,37 +63,90 @@ export function renderTaskCard(task, currentUser) {
         <button class="btn btn-success btn-sm" data-action="complete-task" data-task-id="${task.id}">
           Завершить работу
         </button>
+      `;
+    }
+    if (isModeratorOrAdmin) {
+      actionsHtml += `
+        <button class="btn btn-secondary btn-sm" data-action="edit-task" data-task-id="${task.id}">
+          Редактировать
+        </button>
+      `;
+    }
+    if (isAuthor || isModeratorOrAdmin) {
+      actionsHtml += `
         <button class="btn btn-danger-outline btn-sm" data-action="cancel-task" data-task-id="${task.id}">
           Отменить
         </button>
       `;
     }
-  } else if (task.status === "pending_completion" && isAuthor) {
-    actionsHtml = `
-      <button class="btn btn-success btn-sm" data-action="complete-task" data-task-id="${task.id}">
-        Подтвердить выполнение
-      </button>
-      <button class="btn btn-danger-outline btn-sm" data-action="cancel-task" data-task-id="${task.id}">
-        Отменить
-      </button>
-    `;
-  } else if (task.status === "completed" && isAuthor) {
-    if (task.my_review) {
-      actionsHtml = `
-        <button class="btn btn-secondary btn-sm" data-action="edit-review" data-task-id="${task.id}">
-          Редактировать отзыв
-        </button>
-        <button class="btn btn-danger-outline btn-sm" data-action="delete-review" data-review-id="${task.my_review.id}">
-          Удалить отзыв
-        </button>
-      `;
-    } else {
-      actionsHtml = `
-        <button class="btn btn-primary btn-sm" data-action="create-review" data-task-id="${task.id}">
-          Оставить отзыв
+    if (isModeratorOrAdmin) {
+      actionsHtml += `
+        <button class="btn btn-danger-outline btn-sm" data-action="delete-task" data-task-id="${task.id}">
+          Удалить
         </button>
       `;
     }
+  } else if (task.status === "pending_completion") {
+    if (isAuthor) {
+      actionsHtml += `
+        <button class="btn btn-success btn-sm" data-action="complete-task" data-task-id="${task.id}">
+          Подтвердить выполнение
+        </button>
+      `;
+    }
+    if (isModeratorOrAdmin) {
+      actionsHtml += `
+        <button class="btn btn-secondary btn-sm" data-action="edit-task" data-task-id="${task.id}">
+          Редактировать
+        </button>
+      `;
+    }
+    if (isAuthor || isModeratorOrAdmin) {
+      actionsHtml += `
+        <button class="btn btn-danger-outline btn-sm" data-action="cancel-task" data-task-id="${task.id}">
+          Отменить
+        </button>
+      `;
+    }
+    if (isModeratorOrAdmin) {
+      actionsHtml += `
+        <button class="btn btn-danger-outline btn-sm" data-action="delete-task" data-task-id="${task.id}">
+          Удалить
+        </button>
+      `;
+    }
+  } else if (task.status === "completed") {
+    if (isAuthor) {
+      if (task.my_review) {
+        actionsHtml += `
+          <button class="btn btn-secondary btn-sm" data-action="edit-review" data-task-id="${task.id}">
+            Редактировать отзыв
+          </button>
+          <button class="btn btn-danger-outline btn-sm" data-action="delete-review" data-review-id="${task.my_review.id}">
+            Удалить отзыв
+          </button>
+        `;
+      } else {
+        actionsHtml += `
+          <button class="btn btn-primary btn-sm" data-action="create-review" data-task-id="${task.id}">
+            Оставить отзыв
+          </button>
+        `;
+      }
+    }
+    if (isModeratorOrAdmin) {
+      actionsHtml += `
+        <button class="btn btn-danger-outline btn-sm" data-action="delete-task" data-task-id="${task.id}">
+          Удалить
+        </button>
+      `;
+    }
+  } else if (task.status === "canceled" && isModeratorOrAdmin) {
+    actionsHtml += `
+      <button class="btn btn-danger-outline btn-sm" data-action="delete-task" data-task-id="${task.id}">
+        Удалить
+      </button>
+    `;
   }
 
   if (task.assigned_master_id) {

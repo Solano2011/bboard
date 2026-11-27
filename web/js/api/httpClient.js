@@ -145,6 +145,10 @@ class HttpClient {
     return this.request(`/tasks/${taskId}`, { method: "PUT", body: payload });
   }
 
+  deleteTask(taskId) {
+    return this.request(`/tasks/${taskId}`, { method: "DELETE" });
+  }
+
   assignMaster(taskId, masterProfileId) {
     return this.request(`/tasks/${taskId}/assign`, {
       method: "POST",
@@ -182,6 +186,10 @@ class HttpClient {
     return this.request("/master-profile/me", { method: "PUT", body: payload });
   }
 
+  deleteMyMasterProfile() {
+    return this.request("/master-profile/me", { method: "DELETE" });
+  }
+
   getPublicMasterProfile(id) {
     return this.request(`/masters/${id}`);
   }
@@ -213,6 +221,18 @@ class HttpClient {
 
   deleteReview(reviewId) {
     return this.request(`/reviews/${reviewId}`, { method: "DELETE" });
+  }
+
+  // Admin
+  listAdminUsers({ search = "", limit = 50, offset = 0 } = {}) {
+    return this.request("/admin/users", { query: { search, limit, offset } });
+  }
+
+  updateUserRole(userId, role) {
+    return this.request(`/admin/users/${userId}/role`, {
+      method: "PATCH",
+      body: { role },
+    });
   }
 }
 

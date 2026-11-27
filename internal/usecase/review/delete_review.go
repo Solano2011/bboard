@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"bboard/internal/domain/review"
+	"bboard/internal/domain/user"
 
 	"github.com/sirupsen/logrus"
 )
@@ -11,6 +12,7 @@ import (
 type DeleteReviewInput struct {
 	ReviewID    int64
 	ActorUserID int64
+	ActorRole   user.Role
 }
 
 type DeleteReviewUseCase struct {
@@ -35,7 +37,7 @@ func (uc *DeleteReviewUseCase) Execute(ctx context.Context, input DeleteReviewIn
 		return err
 	}
 
-	if rev.AuthorUserID != input.ActorUserID {
+	if rev.AuthorUserID != input.ActorUserID && !input.ActorRole.IsModeratorOrAdmin() {
 		return review.ErrForbiddenReview
 	}
 
@@ -43,6 +45,10 @@ func (uc *DeleteReviewUseCase) Execute(ctx context.Context, input DeleteReviewIn
 		return err
 	}
 
-	uc.log.WithField("review_id", rev.ID).Info("master review deleted")
+	uc.log.WithFields(logrus.Fields{
+		"review_id":  rev.ID,
+		"actor_id":   input.ActorUserID,
+		"actor_role": input.ActorRole,
+	}).Info("master review deleted")
 	return nil
 }

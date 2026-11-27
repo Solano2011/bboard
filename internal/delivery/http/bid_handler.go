@@ -92,13 +92,14 @@ func (h *BidHandler) Create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, mapBidToResponse(created))
 }
 
-// ListByTask обрабатывает GET /api/v1/tasks/{id}/bids (список откликов для автора задачи).
+// ListByTask обрабатывает GET /api/v1/tasks/{id}/bids (список откликов для автора задачи или модератора/админа).
 func (h *BidHandler) ListByTask(w http.ResponseWriter, r *http.Request) {
 	actorID, ok := middleware.UserIDFromContext(r.Context())
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
 		return
 	}
+	actorRole, _ := middleware.UserRoleFromContext(r.Context())
 
 	taskID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || taskID <= 0 {
@@ -107,8 +108,9 @@ func (h *BidHandler) ListByTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bids, err := h.listUC.Execute(r.Context(), bidUC.ListBidsInput{
-		TaskID:  taskID,
-		ActorID: actorID,
+		TaskID:    taskID,
+		ActorID:   actorID,
+		ActorRole: actorRole,
 	})
 	if err != nil {
 		h.handleDomainError(w, err)

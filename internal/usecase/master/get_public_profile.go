@@ -6,6 +6,7 @@ import (
 
 	"bboard/internal/domain/master"
 	"bboard/internal/domain/review"
+	"bboard/internal/domain/user"
 
 	"github.com/sirupsen/logrus"
 )
@@ -35,7 +36,7 @@ func NewGetPublicProfileUseCase(
 	}
 }
 
-func (uc *GetPublicProfileUseCase) Execute(ctx context.Context, profileID, viewerUserID int64) (*PublicProfileOutput, error) {
+func (uc *GetPublicProfileUseCase) Execute(ctx context.Context, profileID, viewerUserID int64, viewerRole user.Role) (*PublicProfileOutput, error) {
 	if profileID <= 0 {
 		return nil, master.ErrProfileNotFound
 	}
@@ -45,7 +46,9 @@ func (uc *GetPublicProfileUseCase) Execute(ctx context.Context, profileID, viewe
 		return nil, err
 	}
 
-	contactsVisible := profile.IsContactsPublic || (viewerUserID > 0 && viewerUserID == profile.UserID)
+	contactsVisible := profile.IsContactsPublic ||
+		viewerRole.IsModeratorOrAdmin() ||
+		(viewerUserID > 0 && viewerUserID == profile.UserID)
 	if !contactsVisible && viewerUserID > 0 {
 		hasShared, err := uc.masterRepo.HasSharedTaskWithProfile(ctx, viewerUserID, profile.ID)
 		if err != nil {

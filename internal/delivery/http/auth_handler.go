@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"bboard/internal/delivery/http/middleware"
 	domainAuth "bboard/internal/domain/auth"
 	"bboard/internal/domain/user"
 	"bboard/internal/usecase/auth"
@@ -24,6 +25,7 @@ type AuthHandler struct {
 	loginUC    *auth.LoginUseCase
 	refreshUC  *auth.RefreshUseCase
 	logoutUC   *auth.LogoutUseCase
+	userRepo   user.Repository
 	refreshTTL time.Duration
 	isProd     bool
 	log        *logrus.Entry
@@ -35,6 +37,7 @@ func NewAuthHandler(
 	loginUC *auth.LoginUseCase,
 	refreshUC *auth.RefreshUseCase,
 	logoutUC *auth.LogoutUseCase,
+	userRepo user.Repository,
 	refreshTTL time.Duration,
 	isProd bool,
 	log *logrus.Logger,
@@ -44,13 +47,12 @@ func NewAuthHandler(
 		loginUC:    loginUC,
 		refreshUC:  refreshUC,
 		logoutUC:   logoutUC,
+		userRepo:   userRepo,
 		refreshTTL: refreshTTL,
 		isProd:     isProd,
 		log:        log.WithField("handler", "auth"),
 	}
 }
-
-// --- DTO (Data Transfer Objects) ---
 
 type registerRequest struct {
 	Name     string `json:"name"`
@@ -69,6 +71,7 @@ type userResponse struct {
 	Name      string    `json:"name"`
 	Email     string    `json:"email"`
 	Phone     string    `json:"phone,omitempty"`
+	Role      user.Role `json:"role"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -81,8 +84,6 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
-// --- HTTP Handlers ---
-
 // Register обрабатывает POST /api/v1/auth/register.
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
@@ -93,20 +94,16 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 
 	if err := dec.Decode(&req); err != nil {
 		h.log.WithError(err).Warn("failed to decode register request body")
-		writeJSON(w, http.StatusBadRequest, errorResponse{
-			Error: "invalid JSON payload",
-		})
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid JSON payload"})
 		return
 	}
 
-	input := auth.RegisterInput{
+	out, err := h.registerUC.Execute(r.Context(), auth.RegisterInput{
 		Name:     req.Name,
 		Email:    req.Email,
 		Phone:    req.Phone,
 		Password: req.Password,
-	}
-
-	out, err := h.registerUC.Execute(r.Context(), input)
+	})
 	if err != nil {
 		h.handleDomainError(w, err)
 		return
@@ -129,18 +126,14 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	if err := dec.Decode(&req); err != nil {
 		h.log.WithError(err).Warn("failed to decode login request body")
-		writeJSON(w, http.StatusBadRequest, errorResponse{
-			Error: "invalid JSON payload",
-		})
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid JSON payload"})
 		return
 	}
 
-	input := auth.LoginInput{
+	out, err := h.loginUC.Execute(r.Context(), auth.LoginInput{
 		Email:    req.Email,
 		Password: req.Password,
-	}
-
-	out, err := h.loginUC.Execute(r.Context(), input)
+	})
 	if err != nil {
 		h.handleDomainError(w, err)
 		return
@@ -188,7 +181,27 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// --- Helpers ---
+// Me обрабатывает GET /api/v1/auth/me и возвращает актуальные данные пользователя из БД.
+func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
+	userID, ok := middleware.UserIDFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
+		return
+	}
+
+	u, err := h.userRepo.GetByID(r.Context(), userID)
+	if err != nil {
+		if errors.Is(err, user.ErrUserNotFound) {
+			writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "user not found"})
+			return
+		}
+		h.log.WithError(err).Error("failed to load current user in /auth/me")
+		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "internal server error"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, mapUserToResponse(u))
+}
 
 func (h *AuthHandler) setRefreshCookie(w http.ResponseWriter, rawToken string) {
 	http.SetCookie(w, &http.Cookie{
@@ -215,11 +228,16 @@ func (h *AuthHandler) clearRefreshCookie(w http.ResponseWriter) {
 }
 
 func mapUserToResponse(u *user.User) userResponse {
+	role := u.Role
+	if role == "" {
+		role = user.RoleUser
+	}
 	return userResponse{
 		ID:        u.ID,
 		Name:      u.Name,
 		Email:     u.Email,
 		Phone:     u.Phone,
+		Role:      role,
 		CreatedAt: u.CreatedAt,
 	}
 }

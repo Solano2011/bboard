@@ -6,13 +6,15 @@ import (
 
 	"bboard/internal/domain/bid"
 	"bboard/internal/domain/task"
+	"bboard/internal/domain/user"
 
 	"github.com/sirupsen/logrus"
 )
 
 type ListBidsInput struct {
-	TaskID  int64
-	ActorID int64
+	TaskID    int64
+	ActorID   int64
+	ActorRole user.Role
 }
 
 type ListBidsUseCase struct {
@@ -39,11 +41,12 @@ func (uc *ListBidsUseCase) Execute(ctx context.Context, input ListBidsInput) ([]
 		return nil, err
 	}
 
-	// Смотреть все отклики на задачу может только её автор
-	if t.AuthorID != input.ActorID {
+	// Смотреть отклики может автор задачи или модератор/администратор
+	if t.AuthorID != input.ActorID && !input.ActorRole.IsModeratorOrAdmin() {
 		uc.log.WithFields(logrus.Fields{
-			"task_id":  input.TaskID,
-			"actor_id": input.ActorID,
+			"task_id":    input.TaskID,
+			"actor_id":   input.ActorID,
+			"actor_role": input.ActorRole,
 		}).Warn("list bids rejected: forbidden")
 		return nil, bid.ErrForbiddenView
 	}

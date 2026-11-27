@@ -12,6 +12,7 @@ import (
 	"bboard/internal/domain/master"
 	"bboard/internal/domain/review"
 	"bboard/internal/domain/task"
+	"bboard/internal/domain/user"
 	taskUC "bboard/internal/usecase/task"
 
 	"github.com/sirupsen/logrus"
@@ -22,6 +23,7 @@ type TaskHandler struct {
 	createUC        *taskUC.CreateTaskUseCase
 	listUC          *taskUC.ListTasksUseCase
 	updateUC        *taskUC.UpdateTaskUseCase
+	deleteUC        *taskUC.DeleteTaskUseCase
 	assignUC        *taskUC.AssignMasterUseCase
 	markCompletedUC *taskUC.MarkTaskCompletedUseCase
 	completeUC      *taskUC.CompleteTaskUseCase
@@ -36,6 +38,7 @@ func NewTaskHandler(
 	createUC *taskUC.CreateTaskUseCase,
 	listUC *taskUC.ListTasksUseCase,
 	updateUC *taskUC.UpdateTaskUseCase,
+	deleteUC *taskUC.DeleteTaskUseCase,
 	assignUC *taskUC.AssignMasterUseCase,
 	markCompletedUC *taskUC.MarkTaskCompletedUseCase,
 	completeUC *taskUC.CompleteTaskUseCase,
@@ -48,6 +51,7 @@ func NewTaskHandler(
 		createUC:        createUC,
 		listUC:          listUC,
 		updateUC:        updateUC,
+		deleteUC:        deleteUC,
 		assignUC:        assignUC,
 		markCompletedUC: markCompletedUC,
 		completeUC:      completeUC,
@@ -99,6 +103,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
 		return
 	}
+	actorRole, _ := middleware.UserRoleFromContext(r.Context())
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
@@ -128,7 +133,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, h.mapTaskToResponse(r.Context(), created, authorID, 0, nil))
+	writeJSON(w, http.StatusCreated, h.mapTaskToResponse(r.Context(), created, authorID, actorRole, 0, nil))
 }
 
 // Update обрабатывает PUT /api/v1/tasks/{id}.
@@ -138,6 +143,7 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
 		return
 	}
+	actorRole, _ := middleware.UserRoleFromContext(r.Context())
 
 	taskID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || taskID <= 0 {
@@ -160,6 +166,7 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 	updated, err := h.updateUC.Execute(r.Context(), taskUC.UpdateTaskInput{
 		TaskID:       taskID,
 		ActorID:      actorID,
+		ActorRole:    actorRole,
 		Title:        req.Title,
 		Description:  req.Description,
 		Category:     req.Category,
@@ -174,7 +181,34 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, 0, nil))
+	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, actorRole, 0, nil))
+}
+
+// Delete обрабатывает DELETE /api/v1/tasks/{id}.
+func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	actorID, ok := middleware.UserIDFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
+		return
+	}
+	actorRole, _ := middleware.UserRoleFromContext(r.Context())
+
+	taskID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || taskID <= 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid task id in path"})
+		return
+	}
+
+	if err := h.deleteUC.Execute(r.Context(), taskUC.DeleteTaskInput{
+		TaskID:    taskID,
+		ActorID:   actorID,
+		ActorRole: actorRole,
+	}); err != nil {
+		h.handleDomainError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // List обрабатывает GET /api/v1/tasks.
@@ -222,6 +256,7 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	currentUserID, _ := middleware.UserIDFromContext(r.Context())
+	currentUserRole, _ := middleware.UserRoleFromContext(r.Context())
 	currentUserProfileID := h.resolveProfileID(r.Context(), currentUserID)
 
 	var completedAuthorTaskIDs []int64
@@ -248,7 +283,7 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 		if reviewsByTaskID != nil {
 			preloadedReview = reviewsByTaskID[t.ID]
 		}
-		resp = append(resp, h.mapTaskToResponse(r.Context(), t, currentUserID, currentUserProfileID, preloadedReview))
+		resp = append(resp, h.mapTaskToResponse(r.Context(), t, currentUserID, currentUserRole, currentUserProfileID, preloadedReview))
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -290,7 +325,8 @@ func (h *TaskHandler) AssignMaster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, 0, nil))
+	actorRole, _ := middleware.UserRoleFromContext(r.Context())
+	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, actorRole, 0, nil))
 }
 
 // MarkCompleted обрабатывает POST /api/v1/tasks/{id}/mark-completed (мастер отмечает выполнение).
@@ -300,6 +336,7 @@ func (h *TaskHandler) MarkCompleted(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
 		return
 	}
+	actorRole, _ := middleware.UserRoleFromContext(r.Context())
 
 	taskID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || taskID <= 0 {
@@ -316,7 +353,7 @@ func (h *TaskHandler) MarkCompleted(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, h.resolveProfileID(r.Context(), actorID), nil))
+	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, actorRole, h.resolveProfileID(r.Context(), actorID), nil))
 }
 
 // Complete обрабатывает POST /api/v1/tasks/{id}/complete.
@@ -326,6 +363,7 @@ func (h *TaskHandler) Complete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
 		return
 	}
+	actorRole, _ := middleware.UserRoleFromContext(r.Context())
 
 	taskID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || taskID <= 0 {
@@ -342,7 +380,7 @@ func (h *TaskHandler) Complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, 0, nil))
+	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, actorRole, 0, nil))
 }
 
 // Cancel обрабатывает POST /api/v1/tasks/{id}/cancel.
@@ -352,6 +390,7 @@ func (h *TaskHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
 		return
 	}
+	actorRole, _ := middleware.UserRoleFromContext(r.Context())
 
 	taskID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || taskID <= 0 {
@@ -359,16 +398,13 @@ func (h *TaskHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.cancelUC.Execute(r.Context(), taskUC.ChangeTaskStatusInput{
-		TaskID:  taskID,
-		ActorID: actorID,
-	})
+	updated, err := h.cancelUC.Execute(r.Context(), taskID, actorID, actorRole)
 	if err != nil {
 		h.handleDomainError(w, err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, 0, nil))
+	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, actorRole, 0, nil))
 }
 
 func (h *TaskHandler) resolveProfileID(ctx context.Context, userID int64) int64 {
@@ -382,7 +418,7 @@ func (h *TaskHandler) resolveProfileID(ctx context.Context, userID int64) int64 
 	return profile.ID
 }
 
-func (h *TaskHandler) mapTaskToResponse(ctx context.Context, t *task.Task, currentUserID, currentUserProfileID int64, preloadedReview *review.Review) taskResponse {
+func (h *TaskHandler) mapTaskToResponse(ctx context.Context, t *task.Task, currentUserID int64, currentUserRole user.Role, currentUserProfileID int64, preloadedReview *review.Review) taskResponse {
 	isAssignedToMe := currentUserProfileID > 0 &&
 		t.AssignedMasterID != nil &&
 		*t.AssignedMasterID == currentUserProfileID
@@ -407,7 +443,7 @@ func (h *TaskHandler) mapTaskToResponse(ctx context.Context, t *task.Task, curre
 	isAssignedWithContacts := isAssignedToMe &&
 		(t.Status == task.StatusInProgress || t.Status == task.StatusPendingCompletion || t.Status == task.StatusCompleted)
 
-	if isAuthor || isAssignedWithContacts {
+	if isAuthor || isAssignedWithContacts || currentUserRole.IsModeratorOrAdmin() {
 		resp.ContactPhone = t.ContactPhone
 		resp.WorkAddress = t.WorkAddress
 	}

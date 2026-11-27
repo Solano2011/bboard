@@ -35,7 +35,7 @@ web/
 - **Паттерн:** Application Shell (Каркас приложения).
 - Единственная HTML-страница SPA, изолирующая разметку от бизнес-логики.
 - Подключает `/css/styles.css` и точку входа `/js/app.js` (`type="module"`).
-- Содержит вкладки навигации (`Лента заказов`, `Каталог мастеров`, `Мой кабинет` для авторизованных), фильтр статусов (включая `pending_completion`) и семантические контейнеры (`#navActions`, `#primaryCta`, `#contentGrid`, `#modalBackdrop`).
+- Содержит вкладки навигации (`Лента заказов`, `Каталог мастеров`, `Мой кабинет` для авторизованных и `Пользователи` только для `admin`), фильтр статусов (включая `pending_completion`) и семантические контейнеры (`#navActions`, `#primaryCta`, `#contentGrid`, `#modalBackdrop`).
 
 ### `web/css/styles.css`
 - **Паттерн:** Design Tokens (CSS Custom Properties) + BEM-like Component Classes.
@@ -52,9 +52,10 @@ web/
 - Перехватывает `401 Unauthorized` (кроме `/auth/*`), выполняет одиночный запрос `POST /api/v1/auth/refresh` через общий промис `refreshPromise` (защита от race condition), обновляет `access_token` через `tokenUpdatedHandler` и повторяет исходный запрос; при отказе refresh вызывает `unauthorizedHandler`.
 - Методы:
   - Авторизация: `login`, `register`, `logout`, `me`.
-  - Заказы и отклики: `listTasks`, `createTask`, `updateTask`, `assignMaster(taskId, masterProfileId)`, `markTaskCompleted`, `completeTask`, `cancelTask`, `createBid`, `listTaskBids`.
-  - Мастера и услуги: `getMyMasterProfile`, `upsertMyMasterProfile`, `getPublicMasterProfile`, `listMasterServices`, `createMasterService`, `updateMasterService`, `deleteMasterService`.
+  - Заказы и отклики: `listTasks`, `createTask`, `updateTask`, `deleteTask`, `assignMaster(taskId, masterProfileId)`, `markTaskCompleted`, `completeTask`, `cancelTask`, `createBid`, `listTaskBids`.
+  - Мастера и услуги: `getMyMasterProfile`, `upsertMyMasterProfile`, `deleteMyMasterProfile`, `getPublicMasterProfile`, `listMasterServices`, `createMasterService`, `updateMasterService`, `deleteMasterService`.
   - Отзывы: `createReview`, `updateReview`, `deleteReview`.
+  - Администрирование: `listAdminUsers`, `updateUserRole`.
 
 ### `web/js/constants/categories.js` (Справочник категорий)
 - Единый источник истины для списка категорий (`CATEGORIES`), словаря названий (`CATEGORY_LABELS`) и генератора `<option>` (`renderCategoryOptions`).
@@ -76,6 +77,5 @@ web/
 
 ### `web/js/app.js` (Контроллер приложения)
 - **Паттерн:** Mediator + Event Delegation.
-- Последовательная инициализация `initApp()`: дожидается `validateSessionOnStartup()` (обновление протухшего access-токена через `api.me()`) до первичной загрузки `loadData()`.
-- Реализует вкладку **«Мой кабинет»** (`renderCabinet`): форма профиля мастера (включая тумблер `is_contacts_public`) и блок «Мои анкеты услуг» со счётчиком `X из 3` и блокировкой занятых категорий при создании новой анкеты.
-- Реализует публичную модалку **Профиль мастера** (`openMasterProfileModal`), модалку откликов с рейтингом и переходом в профиль (`openViewBidsModal`) и модалку отзывов (`openReviewFormModal`).
+- Последовательная инициализация `initApp()`: дожидается `validateSessionOnStartup()` (актуализация профиля и роли через `api.me()`) до первичной загрузки `loadData()`.
+- Реализует вкладку **«Мой кабинет»** (`renderCabinet`: профиль мастера с удалением `deleteMyMasterProfile`, блок услуг `X из 3` с блокировкой занятых категорий), вкладку **«Пользователи»** (`renderAdminUsers` для `admin`: поиск и назначение/снятие модераторов), расширенные действия модерации на заказах, услугах и отзывах, публичную модалку профиля мастера (`openMasterProfileModal`), модалку откликов (`openViewBidsModal`) и модалку отзывов (`openReviewFormModal`).

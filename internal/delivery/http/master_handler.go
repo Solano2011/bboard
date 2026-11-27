@@ -19,6 +19,7 @@ type MasterHandler struct {
 	upsertProfileUC    *masterUC.UpsertProfileUseCase
 	getMyProfileUC     *masterUC.GetMyProfileUseCase
 	getPublicProfileUC *masterUC.GetPublicProfileUseCase
+	deleteMyProfileUC  *masterUC.DeleteMyProfileUseCase
 	createServiceUC    *masterUC.CreateServiceUseCase
 	updateServiceUC    *masterUC.UpdateServiceUseCase
 	deleteServiceUC    *masterUC.DeleteServiceUseCase
@@ -30,6 +31,7 @@ func NewMasterHandler(
 	upsertProfileUC *masterUC.UpsertProfileUseCase,
 	getMyProfileUC *masterUC.GetMyProfileUseCase,
 	getPublicProfileUC *masterUC.GetPublicProfileUseCase,
+	deleteMyProfileUC *masterUC.DeleteMyProfileUseCase,
 	createServiceUC *masterUC.CreateServiceUseCase,
 	updateServiceUC *masterUC.UpdateServiceUseCase,
 	deleteServiceUC *masterUC.DeleteServiceUseCase,
@@ -40,6 +42,7 @@ func NewMasterHandler(
 		upsertProfileUC:    upsertProfileUC,
 		getMyProfileUC:     getMyProfileUC,
 		getPublicProfileUC: getPublicProfileUC,
+		deleteMyProfileUC:  deleteMyProfileUC,
 		createServiceUC:    createServiceUC,
 		updateServiceUC:    updateServiceUC,
 		deleteServiceUC:    deleteServiceUC,
@@ -181,6 +184,22 @@ func (h *MasterHandler) UpsertMyProfile(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, mapProfileToResponse(profile))
 }
 
+// DeleteMyProfile обрабатывает DELETE /api/v1/master-profile/me.
+func (h *MasterHandler) DeleteMyProfile(w http.ResponseWriter, r *http.Request) {
+	userID, ok := middleware.UserIDFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
+		return
+	}
+
+	if err := h.deleteMyProfileUC.Execute(r.Context(), userID); err != nil {
+		h.handleDomainError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 // GetPublicProfile обрабатывает GET /api/v1/masters/{id}.
 func (h *MasterHandler) GetPublicProfile(w http.ResponseWriter, r *http.Request) {
 	profileID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -190,7 +209,8 @@ func (h *MasterHandler) GetPublicProfile(w http.ResponseWriter, r *http.Request)
 	}
 
 	viewerUserID, _ := middleware.UserIDFromContext(r.Context())
-	out, err := h.getPublicProfileUC.Execute(r.Context(), profileID, viewerUserID)
+	viewerRole, _ := middleware.UserRoleFromContext(r.Context())
+	out, err := h.getPublicProfileUC.Execute(r.Context(), profileID, viewerUserID, viewerRole)
 	if err != nil {
 		h.handleDomainError(w, err)
 		return
@@ -302,6 +322,7 @@ func (h *MasterHandler) UpdateService(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
 		return
 	}
+	actorRole, _ := middleware.UserRoleFromContext(r.Context())
 
 	serviceID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || serviceID <= 0 {
@@ -321,6 +342,7 @@ func (h *MasterHandler) UpdateService(w http.ResponseWriter, r *http.Request) {
 	svc, err := h.updateServiceUC.Execute(r.Context(), masterUC.UpdateServiceInput{
 		ServiceID:             serviceID,
 		ActorUserID:           userID,
+		ActorRole:             actorRole,
 		Category:              req.Category,
 		Title:                 req.Title,
 		ExperienceDescription: req.ExperienceDescription,
@@ -342,6 +364,7 @@ func (h *MasterHandler) DeleteService(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
 		return
 	}
+	actorRole, _ := middleware.UserRoleFromContext(r.Context())
 
 	serviceID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || serviceID <= 0 {
@@ -352,6 +375,7 @@ func (h *MasterHandler) DeleteService(w http.ResponseWriter, r *http.Request) {
 	if err := h.deleteServiceUC.Execute(r.Context(), masterUC.DeleteServiceInput{
 		ServiceID:   serviceID,
 		ActorUserID: userID,
+		ActorRole:   actorRole,
 	}); err != nil {
 		h.handleDomainError(w, err)
 		return

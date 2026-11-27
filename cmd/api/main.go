@@ -13,6 +13,7 @@ import (
 	"bboard/internal/config"
 	deliveryHTTP "bboard/internal/delivery/http"
 	"bboard/internal/repository/postgres"
+	"bboard/internal/usecase/admin"
 	"bboard/internal/usecase/auth"
 	"bboard/internal/usecase/bid"
 	"bboard/internal/usecase/master"
@@ -65,8 +66,17 @@ func main() {
 	bidRepo := postgres.NewBidRepo(dbPool)
 	reviewRepo := postgres.NewReviewRepo(dbPool)
 
+	// Bootstrap первого администратора по ADMIN_EMAIL (идемпотентно)
+	if cfg.AdminEmail != "" {
+		if err := userRepo.PromoteToAdminByEmail(ctx, cfg.AdminEmail); err != nil {
+			log.WithError(err).WithField("admin_email", cfg.AdminEmail).Warn("failed to bootstrap admin role by email")
+		} else {
+			log.WithField("admin_email", cfg.AdminEmail).Info("admin bootstrap check completed")
+		}
+	}
+
 	// 6. Собираем слой бизнес-сценариев (UseCases)
-	registerUC := auth.NewRegisterUseCase(userRepo, refreshTokenRepo, jwtManager, cfg.RefreshTokenTTL, log)
+	registerUC := auth.NewRegisterUseCase(userRepo, refreshTokenRepo, jwtManager, cfg.RefreshTokenTTL, cfg.AdminEmail, log)
 	loginUC := auth.NewLoginUseCase(userRepo, refreshTokenRepo, jwtManager, cfg.RefreshTokenTTL, log)
 	refreshUC := auth.NewRefreshUseCase(userRepo, refreshTokenRepo, jwtManager, cfg.RefreshTokenTTL, log)
 	logoutUC := auth.NewLogoutUseCase(refreshTokenRepo, log)
@@ -74,6 +84,7 @@ func main() {
 	createTaskUC := task.NewCreateTaskUseCase(taskRepo, userRepo, log)
 	listTasksUC := task.NewListTasksUseCase(taskRepo, log)
 	updateTaskUC := task.NewUpdateTaskUseCase(taskRepo, log)
+	deleteTaskUC := task.NewDeleteTaskUseCase(taskRepo, log)
 	assignMasterUC := task.NewAssignMasterUseCase(taskRepo, masterRepo, log)
 	markCompletedUC := task.NewMarkTaskCompletedUseCase(taskRepo, masterRepo, log)
 	completeTaskUC := task.NewCompleteTaskUseCase(taskRepo, log)
@@ -82,6 +93,7 @@ func main() {
 	upsertProfileUC := master.NewUpsertProfileUseCase(masterRepo, userRepo, log)
 	getMyProfileUC := master.NewGetMyProfileUseCase(masterRepo, log)
 	getPublicProfileUC := master.NewGetPublicProfileUseCase(masterRepo, reviewRepo, log)
+	deleteMyProfileUC := master.NewDeleteMyProfileUseCase(masterRepo, log)
 	createServiceUC := master.NewCreateServiceUseCase(masterRepo, log)
 	updateServiceUC := master.NewUpdateServiceUseCase(masterRepo, log)
 	deleteServiceUC := master.NewDeleteServiceUseCase(masterRepo, log)
@@ -94,13 +106,17 @@ func main() {
 	updateReviewUC := review.NewUpdateReviewUseCase(reviewRepo, log)
 	deleteReviewUC := review.NewDeleteReviewUseCase(reviewRepo, log)
 
+	listUsersUC := admin.NewListUsersUseCase(userRepo, log)
+	updateUserRoleUC := admin.NewUpdateUserRoleUseCase(userRepo, log)
+
 	// 7. Собираем слой доставки (Delivery / HTTP)
-	authHandler := deliveryHTTP.NewAuthHandler(registerUC, loginUC, refreshUC, logoutUC, cfg.RefreshTokenTTL, cfg.IsProd, log)
-	taskHandler := deliveryHTTP.NewTaskHandler(createTaskUC, listTasksUC, updateTaskUC, assignMasterUC, markCompletedUC, completeTaskUC, cancelTaskUC, masterRepo, reviewRepo, log)
-	masterHandler := deliveryHTTP.NewMasterHandler(upsertProfileUC, getMyProfileUC, getPublicProfileUC, createServiceUC, updateServiceUC, deleteServiceUC, listServicesUC, log)
+	authHandler := deliveryHTTP.NewAuthHandler(registerUC, loginUC, refreshUC, logoutUC, userRepo, cfg.RefreshTokenTTL, cfg.IsProd, log)
+	taskHandler := deliveryHTTP.NewTaskHandler(createTaskUC, listTasksUC, updateTaskUC, deleteTaskUC, assignMasterUC, markCompletedUC, completeTaskUC, cancelTaskUC, masterRepo, reviewRepo, log)
+	masterHandler := deliveryHTTP.NewMasterHandler(upsertProfileUC, getMyProfileUC, getPublicProfileUC, deleteMyProfileUC, createServiceUC, updateServiceUC, deleteServiceUC, listServicesUC, log)
 	bidHandler := deliveryHTTP.NewBidHandler(createBidUC, listBidsUC, log)
 	reviewHandler := deliveryHTTP.NewReviewHandler(createReviewUC, updateReviewUC, deleteReviewUC, log)
-	router := deliveryHTTP.NewRouter(authHandler, taskHandler, masterHandler, bidHandler, reviewHandler, jwtManager, log)
+	adminHandler := deliveryHTTP.NewAdminHandler(listUsersUC, updateUserRoleUC, log)
+	router := deliveryHTTP.NewRouter(authHandler, taskHandler, masterHandler, bidHandler, reviewHandler, adminHandler, jwtManager, userRepo, log)
 
 	// 8. Настраиваем HTTP-сервер с таймаутами
 	srv := &http.Server{
