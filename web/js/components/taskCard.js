@@ -149,6 +149,14 @@ export function renderTaskCard(task, currentUser) {
     `;
   }
 
+  if (Array.isArray(task.photos) && task.photos.length > 0) {
+    actionsHtml += `
+      <button class="btn btn-secondary btn-sm" data-action="view-task-photos" data-task-id="${task.id}">
+        📷 Посмотреть фото (${task.photos.length})
+      </button>
+    `;
+  }
+
   if (task.assigned_master_id) {
     actionsHtml += `
       <button class="btn btn-secondary btn-sm" data-action="view-master-profile" data-master-profile-id="${task.assigned_master_id}">

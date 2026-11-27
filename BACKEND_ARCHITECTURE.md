@@ -23,7 +23,7 @@ bboard/
 │   │   └── review/    (entity.go, errors.go, repository.go)
 │   ├── usecase/
 │   │   ├── auth/      (tokens.go, register.go, login.go, refresh.go, logout.go)
-│   │   ├── task/      (create_task.go, list_tasks.go, update_task.go, delete_task.go, assign_master.go, mark_completed.go, complete_task.go, cancel_task.go)
+│   │   ├── task/      (create_task.go, list_tasks.go, update_task.go, delete_task.go, assign_master.go, mark_completed.go, complete_task.go, cancel_task.go, photo_storage.go, upload_photos.go, delete_photo.go)
 │   │   ├── master/    (upsert_profile.go, get_my_profile.go, get_public_profile.go, delete_my_profile.go, create_service.go, update_service.go, delete_service.go, list_services.go)
 │   │   ├── bid/       (create_bid.go, list_bids.go)
 │   │   ├── review/    (create_review.go, update_review.go, delete_review.go)
@@ -47,6 +47,7 @@ bboard/
 │       └── admin_handler.go
 ├── pkg/
 │   ├── logger/logger.go
+│   ├── storage/local.go
 │   └── token/ (jwt.go, refresh.go)
 ├── migrations/
 │   ├── 000001_create_users_table.up.sql
@@ -56,8 +57,9 @@ bboard/
 │   ├── 000005_add_master_contact_phone.up.sql
 │   ├── 000006_add_task_location_and_contacts.up.sql
 │   ├── 000007_create_refresh_tokens_table.up.sql
-│   └── 000008_rework_masters_tasks_reviews.up.sql
-│   └── 000009_add_user_roles.up.sql
+│   ├── 000008_rework_masters_tasks_reviews.up.sql
+│   ├── 000009_add_user_roles.up.sql
+│   └── 000010_create_task_photos_table.up.sql
 ├── docker-compose.yml
 ├── go.mod
 ├── .env
@@ -77,7 +79,7 @@ bboard/
 - Запускает `http.Server` с таймаутами и реализует Graceful Shutdown по сигналам `SIGINT` / `SIGTERM`.
 
 ### `internal/config/config.go`
-- Загружает переменные из `.env` (через `godotenv`) и системного окружения в структуру `Config` (`HTTP_PORT`, `DATABASE_URL`, `JWT_SECRET`, `ACCESS_TOKEN_TTL`, `REFRESH_TOKEN_TTL`, `ADMIN_EMAIL`, `LOG_LEVEL`, `APP_ENV`).
+- Загружает переменные из `.env` (через `godotenv`) и системного окружения в структуру `Config` (`HTTP_PORT`, `DATABASE_URL`, `JWT_SECRET`, `ACCESS_TOKEN_TTL`, `REFRESH_TOKEN_TTL`, `ADMIN_EMAIL`, `UPLOAD_DIR`, `LOG_LEVEL`, `APP_ENV`).
 - Завершает запуск с ошибкой при отсутствии критически важных параметров (`JWT_SECRET`, `DATABASE_URL`).
 
 ---
@@ -171,7 +173,7 @@ bboard/
 - **`middleware/logger.go`**, **`middleware/auth.go`** (`Auth`, `OptionalAuth` с загрузкой актуальной роли из БД, `RequireRole`), **`response.go`**.
 - **`router.go` (`NewRouter`)**: публичные маршруты `/health`, `/api/v1/auth/*`, `GET /tasks`, `GET /masters`, `GET /masters/{id}`, `GET /master-services` (с `optAuthMW`), приватные маршруты с `authMW`, админские маршруты `/api/v1/admin/*` с `RequireRole(user.RoleAdmin)` и статика `web/` с `Cache-Control: no-cache`.
 - **`auth_handler.go`**: `POST /auth/register`, `/login`, `/refresh`, `/logout`, `GET /auth/me` (актуальный профиль из БД с полем `role`).
-- **`task_handler.go`**: `POST/GET /tasks`, `PUT/DELETE /tasks/{id}`, `POST /tasks/{id}/assign`, `/mark-completed`, `/complete`, `/cancel`.
+- **`task_handler.go`**: `POST/GET /tasks`, `PUT/DELETE /tasks/{id}`, `POST /tasks/{id}/assign`, `/mark-completed`, `/complete`, `/cancel`, `POST /tasks/{id}/photos`, `DELETE /tasks/{id}/photos/{photoId}` (multipart-загрузка до 3 фото по 5 МБ, батч-загрузка фото в `List`, раздача `/uploads/` без листинга директорий с `X-Content-Type-Options: nosniff`).
 - **`master_handler.go`**: `GET/PUT/DELETE /api/v1/master-profile/me`, `GET /api/v1/masters/{id}`, `GET /api/v1/master-services` (и alias `/masters`), `POST/PUT/DELETE /api/v1/master-services/{id}`.
 - **`bid_handler.go`**: `POST/GET /api/v1/tasks/{id}/bids`.
 - **`review_handler.go`**: `POST /api/v1/tasks/{id}/review`, `PUT/DELETE /api/v1/reviews/{id}`.

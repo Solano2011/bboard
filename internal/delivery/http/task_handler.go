@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -28,6 +29,9 @@ type TaskHandler struct {
 	markCompletedUC *taskUC.MarkTaskCompletedUseCase
 	completeUC      *taskUC.CompleteTaskUseCase
 	cancelUC        *taskUC.CancelTaskUseCase
+	uploadPhotosUC  *taskUC.UploadTaskPhotosUseCase
+	deletePhotoUC   *taskUC.DeleteTaskPhotoUseCase
+	taskRepo        task.Repository
 	masterRepo      master.Repository
 	reviewRepo      review.Repository
 	log             *logrus.Entry
@@ -43,6 +47,9 @@ func NewTaskHandler(
 	markCompletedUC *taskUC.MarkTaskCompletedUseCase,
 	completeUC *taskUC.CompleteTaskUseCase,
 	cancelUC *taskUC.CancelTaskUseCase,
+	uploadPhotosUC *taskUC.UploadTaskPhotosUseCase,
+	deletePhotoUC *taskUC.DeleteTaskPhotoUseCase,
+	taskRepo task.Repository,
 	masterRepo master.Repository,
 	reviewRepo review.Repository,
 	log *logrus.Logger,
@@ -56,6 +63,9 @@ func NewTaskHandler(
 		markCompletedUC: markCompletedUC,
 		completeUC:      completeUC,
 		cancelUC:        cancelUC,
+		uploadPhotosUC:  uploadPhotosUC,
+		deletePhotoUC:   deletePhotoUC,
+		taskRepo:        taskRepo,
 		masterRepo:      masterRepo,
 		reviewRepo:      reviewRepo,
 		log:             log.WithField("handler", "task"),
@@ -77,23 +87,32 @@ type assignMasterRequest struct {
 	MasterProfileID int64 `json:"master_profile_id"`
 }
 
+type taskPhotoResponse struct {
+	ID        int64     `json:"id"`
+	URL       string    `json:"url"`
+	MimeType  string    `json:"mime_type"`
+	SizeBytes int64     `json:"size_bytes"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type taskResponse struct {
-	ID               int64           `json:"id"`
-	AuthorID         int64           `json:"author_id"`
-	AssignedMasterID *int64          `json:"assigned_master_id,omitempty"`
-	IsAssignedToMe   bool            `json:"is_assigned_to_me,omitempty"`
-	Title            string          `json:"title"`
-	Description      string          `json:"description"`
-	Category         string          `json:"category"`
-	City             string          `json:"city,omitempty"`
-	District         string          `json:"district,omitempty"`
-	ContactPhone     string          `json:"contact_phone"`
-	WorkAddress      string          `json:"work_address"`
-	Budget           int64           `json:"budget"`
-	Status           task.Status     `json:"status"`
-	MyReview         *reviewResponse `json:"my_review,omitempty"`
-	CreatedAt        time.Time       `json:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at"`
+	ID               int64               `json:"id"`
+	AuthorID         int64               `json:"author_id"`
+	AssignedMasterID *int64              `json:"assigned_master_id,omitempty"`
+	IsAssignedToMe   bool                `json:"is_assigned_to_me,omitempty"`
+	Title            string              `json:"title"`
+	Description      string              `json:"description"`
+	Category         string              `json:"category"`
+	City             string              `json:"city,omitempty"`
+	District         string              `json:"district,omitempty"`
+	ContactPhone     string              `json:"contact_phone"`
+	WorkAddress      string              `json:"work_address"`
+	Budget           int64               `json:"budget"`
+	Status           task.Status         `json:"status"`
+	Photos           []taskPhotoResponse `json:"photos"`
+	MyReview         *reviewResponse     `json:"my_review,omitempty"`
+	CreatedAt        time.Time           `json:"created_at"`
+	UpdatedAt        time.Time           `json:"updated_at"`
 }
 
 // Create обрабатывает POST /api/v1/tasks.
@@ -133,7 +152,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, h.mapTaskToResponse(r.Context(), created, authorID, actorRole, 0, nil))
+	writeJSON(w, http.StatusCreated, h.mapTaskToResponse(r.Context(), created, authorID, actorRole, 0, nil, nil))
 }
 
 // Update обрабатывает PUT /api/v1/tasks/{id}.
@@ -181,7 +200,8 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, actorRole, 0, nil))
+	photos, _ := h.taskRepo.ListPhotosByTaskID(r.Context(), updated.ID)
+	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, actorRole, 0, nil, photos))
 }
 
 // Delete обрабатывает DELETE /api/v1/tasks/{id}.
@@ -259,6 +279,16 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 	currentUserRole, _ := middleware.UserRoleFromContext(r.Context())
 	currentUserProfileID := h.resolveProfileID(r.Context(), currentUserID)
 
+	taskIDs := make([]int64, 0, len(tasks))
+	for _, t := range tasks {
+		taskIDs = append(taskIDs, t.ID)
+	}
+
+	photosByTaskID, err := h.taskRepo.ListPhotosByTaskIDs(r.Context(), taskIDs)
+	if err != nil {
+		h.log.WithError(err).Warn("failed to batch-load task photos")
+	}
+
 	var completedAuthorTaskIDs []int64
 	if currentUserID > 0 {
 		for _, t := range tasks {
@@ -270,7 +300,6 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	var reviewsByTaskID map[int64]*review.Review
 	if len(completedAuthorTaskIDs) > 0 {
-		var err error
 		reviewsByTaskID, err = h.reviewRepo.GetByTaskIDs(r.Context(), completedAuthorTaskIDs)
 		if err != nil {
 			h.log.WithError(err).Warn("failed to batch-load task reviews")
@@ -283,7 +312,11 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 		if reviewsByTaskID != nil {
 			preloadedReview = reviewsByTaskID[t.ID]
 		}
-		resp = append(resp, h.mapTaskToResponse(r.Context(), t, currentUserID, currentUserRole, currentUserProfileID, preloadedReview))
+		var taskPhotos []*task.Photo
+		if photosByTaskID != nil {
+			taskPhotos = photosByTaskID[t.ID]
+		}
+		resp = append(resp, h.mapTaskToResponse(r.Context(), t, currentUserID, currentUserRole, currentUserProfileID, preloadedReview, taskPhotos))
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -326,7 +359,8 @@ func (h *TaskHandler) AssignMaster(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actorRole, _ := middleware.UserRoleFromContext(r.Context())
-	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, actorRole, 0, nil))
+	photos, _ := h.taskRepo.ListPhotosByTaskID(r.Context(), updated.ID)
+	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, actorRole, 0, nil, photos))
 }
 
 // MarkCompleted обрабатывает POST /api/v1/tasks/{id}/mark-completed (мастер отмечает выполнение).
@@ -353,7 +387,8 @@ func (h *TaskHandler) MarkCompleted(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, actorRole, h.resolveProfileID(r.Context(), actorID), nil))
+	photos, _ := h.taskRepo.ListPhotosByTaskID(r.Context(), updated.ID)
+	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, actorRole, h.resolveProfileID(r.Context(), actorID), nil, photos))
 }
 
 // Complete обрабатывает POST /api/v1/tasks/{id}/complete.
@@ -380,7 +415,8 @@ func (h *TaskHandler) Complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, actorRole, 0, nil))
+	photos, _ := h.taskRepo.ListPhotosByTaskID(r.Context(), updated.ID)
+	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, actorRole, 0, nil, photos))
 }
 
 // Cancel обрабатывает POST /api/v1/tasks/{id}/cancel.
@@ -404,7 +440,117 @@ func (h *TaskHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, actorRole, 0, nil))
+	photos, _ := h.taskRepo.ListPhotosByTaskID(r.Context(), updated.ID)
+	writeJSON(w, http.StatusOK, h.mapTaskToResponse(r.Context(), updated, actorID, actorRole, 0, nil, photos))
+}
+
+// UploadPhotos обрабатывает POST /api/v1/tasks/{id}/photos.
+func (h *TaskHandler) UploadPhotos(w http.ResponseWriter, r *http.Request) {
+	actorID, ok := middleware.UserIDFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
+		return
+	}
+	actorRole, _ := middleware.UserRoleFromContext(r.Context())
+
+	taskID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || taskID <= 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid task id in path"})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<20)
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
+
+	if err := r.ParseMultipartForm(4 << 20); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse{Error: "request body exceeds maximum upload size"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid multipart form payload"})
+		return
+	}
+
+	headers := r.MultipartForm.File["photos"]
+	if len(headers) == 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: task.ErrEmptyPhotoFile.Error()})
+		return
+	}
+	if len(headers) > task.MaxPhotosPerTask {
+		writeJSON(w, http.StatusConflict, errorResponse{Error: task.ErrTooManyPhotos.Error()})
+		return
+	}
+
+	files := make([]taskUC.UploadedPhotoFile, 0, len(headers))
+	for _, fh := range headers {
+		f, err := fh.Open()
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "failed to open uploaded file"})
+			return
+		}
+		data, readErr := io.ReadAll(io.LimitReader(f, task.MaxPhotoSizeBytes+1))
+		_ = f.Close()
+		if readErr != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "failed to read uploaded file"})
+			return
+		}
+		if len(data) > task.MaxPhotoSizeBytes {
+			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse{Error: task.ErrPhotoTooLarge.Error()})
+			return
+		}
+		files = append(files, taskUC.UploadedPhotoFile{Data: data})
+	}
+
+	photos, err := h.uploadPhotosUC.Execute(r.Context(), taskUC.UploadTaskPhotosInput{
+		TaskID:    taskID,
+		ActorID:   actorID,
+		ActorRole: actorRole,
+		Files:     files,
+	})
+	if err != nil {
+		h.handleDomainError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, mapPhotosToResponse(photos))
+}
+
+// DeletePhoto обрабатывает DELETE /api/v1/tasks/{id}/photos/{photoId}.
+func (h *TaskHandler) DeletePhoto(w http.ResponseWriter, r *http.Request) {
+	actorID, ok := middleware.UserIDFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
+		return
+	}
+	actorRole, _ := middleware.UserRoleFromContext(r.Context())
+
+	taskID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || taskID <= 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid task id in path"})
+		return
+	}
+	photoID, err := strconv.ParseInt(r.PathValue("photoId"), 10, 64)
+	if err != nil || photoID <= 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid photo id in path"})
+		return
+	}
+
+	if err := h.deletePhotoUC.Execute(r.Context(), taskUC.DeleteTaskPhotoInput{
+		TaskID:    taskID,
+		PhotoID:   photoID,
+		ActorID:   actorID,
+		ActorRole: actorRole,
+	}); err != nil {
+		h.handleDomainError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (h *TaskHandler) resolveProfileID(ctx context.Context, userID int64) int64 {
@@ -418,7 +564,21 @@ func (h *TaskHandler) resolveProfileID(ctx context.Context, userID int64) int64 
 	return profile.ID
 }
 
-func (h *TaskHandler) mapTaskToResponse(ctx context.Context, t *task.Task, currentUserID int64, currentUserRole user.Role, currentUserProfileID int64, preloadedReview *review.Review) taskResponse {
+func mapPhotosToResponse(photos []*task.Photo) []taskPhotoResponse {
+	resp := make([]taskPhotoResponse, 0, len(photos))
+	for _, p := range photos {
+		resp = append(resp, taskPhotoResponse{
+			ID:        p.ID,
+			URL:       "/uploads/" + p.StorageKey,
+			MimeType:  p.MimeType,
+			SizeBytes: p.SizeBytes,
+			CreatedAt: p.CreatedAt,
+		})
+	}
+	return resp
+}
+
+func (h *TaskHandler) mapTaskToResponse(ctx context.Context, t *task.Task, currentUserID int64, currentUserRole user.Role, currentUserProfileID int64, preloadedReview *review.Review, photos []*task.Photo) taskResponse {
 	isAssignedToMe := currentUserProfileID > 0 &&
 		t.AssignedMasterID != nil &&
 		*t.AssignedMasterID == currentUserProfileID
@@ -435,6 +595,7 @@ func (h *TaskHandler) mapTaskToResponse(ctx context.Context, t *task.Task, curre
 		District:         t.District,
 		Budget:           t.Budget,
 		Status:           t.Status,
+		Photos:           mapPhotosToResponse(photos),
 		CreatedAt:        t.CreatedAt,
 		UpdatedAt:        t.UpdatedAt,
 	}
@@ -470,16 +631,23 @@ func (h *TaskHandler) handleDomainError(w http.ResponseWriter, err error) {
 		errors.Is(err, task.ErrDistrictTooLong),
 		errors.Is(err, task.ErrInvalidPhone),
 		errors.Is(err, task.ErrAddressTooLong),
-		errors.Is(err, task.ErrMasterNotAssigned):
+		errors.Is(err, task.ErrMasterNotAssigned),
+		errors.Is(err, task.ErrEmptyPhotoFile),
+		errors.Is(err, task.ErrUnsupportedPhotoType):
 		writeJSON(w, http.StatusBadRequest, errorResponse{Error: err.Error()})
+
+	case errors.Is(err, task.ErrPhotoTooLarge):
+		writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse{Error: err.Error()})
 
 	case errors.Is(err, task.ErrForbiddenAction):
 		writeJSON(w, http.StatusForbidden, errorResponse{Error: err.Error()})
 
-	case errors.Is(err, task.ErrTaskNotFound):
+	case errors.Is(err, task.ErrTaskNotFound),
+		errors.Is(err, task.ErrPhotoNotFound):
 		writeJSON(w, http.StatusNotFound, errorResponse{Error: err.Error()})
 
-	case errors.Is(err, task.ErrInvalidStatus):
+	case errors.Is(err, task.ErrInvalidStatus),
+		errors.Is(err, task.ErrTooManyPhotos):
 		writeJSON(w, http.StatusConflict, errorResponse{Error: err.Error()})
 
 	default:

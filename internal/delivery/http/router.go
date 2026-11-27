@@ -1,6 +1,7 @@
 package http
 
 import (
+	"io/fs"
 	"net/http"
 
 	"bboard/internal/delivery/http/middleware"
@@ -8,6 +9,27 @@ import (
 
 	"github.com/sirupsen/logrus"
 )
+
+type noDirListingFS struct {
+	fs http.FileSystem
+}
+
+func (n noDirListingFS) Open(name string) (http.File, error) {
+	f, err := n.fs.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if info.IsDir() {
+		_ = f.Close()
+		return nil, fs.ErrNotExist
+	}
+	return f, nil
+}
 
 // NewRouter регистрирует все HTTP-маршруты приложения и оборачивает их в middleware.
 func NewRouter(
@@ -19,6 +41,7 @@ func NewRouter(
 	adminHandler *AdminHandler,
 	tokenParser middleware.TokenParser,
 	userProvider middleware.UserProvider,
+	uploadDir string,
 	log *logrus.Logger,
 ) http.Handler {
 	mux := http.NewServeMux()
@@ -40,7 +63,7 @@ func NewRouter(
 	// Защищённый маршрут текущего пользователя (актуальные данные и роль из БД)
 	mux.Handle("GET /api/v1/auth/me", authMW(http.HandlerFunc(authHandler.Me)))
 
-	// Объявления заказчиков
+	// Объявления заказчиков и фотографии
 	mux.Handle("GET /api/v1/tasks", optAuthMW(http.HandlerFunc(taskHandler.List)))
 	mux.Handle("POST /api/v1/tasks", authMW(http.HandlerFunc(taskHandler.Create)))
 	mux.Handle("PUT /api/v1/tasks/{id}", authMW(http.HandlerFunc(taskHandler.Update)))
@@ -49,6 +72,8 @@ func NewRouter(
 	mux.Handle("POST /api/v1/tasks/{id}/mark-completed", authMW(http.HandlerFunc(taskHandler.MarkCompleted)))
 	mux.Handle("POST /api/v1/tasks/{id}/complete", authMW(http.HandlerFunc(taskHandler.Complete)))
 	mux.Handle("POST /api/v1/tasks/{id}/cancel", authMW(http.HandlerFunc(taskHandler.Cancel)))
+	mux.Handle("POST /api/v1/tasks/{id}/photos", authMW(http.HandlerFunc(taskHandler.UploadPhotos)))
+	mux.Handle("DELETE /api/v1/tasks/{id}/photos/{photoId}", authMW(http.HandlerFunc(taskHandler.DeletePhoto)))
 
 	// Отклики мастеров на объявления
 	mux.Handle("POST /api/v1/tasks/{id}/bids", authMW(http.HandlerFunc(bidHandler.Create)))
@@ -73,6 +98,14 @@ func NewRouter(
 	// Администрирование (только admin)
 	mux.Handle("GET /api/v1/admin/users", authMW(adminMW(http.HandlerFunc(adminHandler.ListUsers))))
 	mux.Handle("PATCH /api/v1/admin/users/{id}/role", authMW(adminMW(http.HandlerFunc(adminHandler.UpdateUserRole))))
+
+	// Безопасная раздача загруженных фотографий без листинга директорий и 301-редиректов
+	uploadsServer := http.StripPrefix("/uploads/", http.FileServer(noDirListingFS{http.Dir(uploadDir)}))
+	mux.Handle("GET /uploads/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "no-cache")
+		uploadsServer.ServeHTTP(w, r)
+	}))
 
 	fileServer := http.FileServer(http.Dir("web"))
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

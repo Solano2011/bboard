@@ -20,6 +20,7 @@ import (
 	"bboard/internal/usecase/review"
 	"bboard/internal/usecase/task"
 	"bboard/pkg/logger"
+	"bboard/pkg/storage"
 	"bboard/pkg/token"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -58,6 +59,11 @@ func main() {
 		log.WithError(err).Fatal("failed to initialize JWT manager")
 	}
 
+	photoStorage, err := storage.NewLocalPhotoStorage(cfg.UploadDir)
+	if err != nil {
+		log.WithError(err).Fatal("failed to initialize local photo storage")
+	}
+
 	// 5. Собираем слой репозиториев (Infrastructure)
 	userRepo := postgres.NewUserRepo(dbPool)
 	refreshTokenRepo := postgres.NewRefreshTokenRepo(dbPool)
@@ -84,11 +90,13 @@ func main() {
 	createTaskUC := task.NewCreateTaskUseCase(taskRepo, userRepo, log)
 	listTasksUC := task.NewListTasksUseCase(taskRepo, log)
 	updateTaskUC := task.NewUpdateTaskUseCase(taskRepo, log)
-	deleteTaskUC := task.NewDeleteTaskUseCase(taskRepo, log)
+	deleteTaskUC := task.NewDeleteTaskUseCase(taskRepo, photoStorage, log)
 	assignMasterUC := task.NewAssignMasterUseCase(taskRepo, masterRepo, log)
 	markCompletedUC := task.NewMarkTaskCompletedUseCase(taskRepo, masterRepo, log)
 	completeTaskUC := task.NewCompleteTaskUseCase(taskRepo, log)
 	cancelTaskUC := task.NewCancelTaskUseCase(taskRepo, log)
+	uploadPhotosUC := task.NewUploadTaskPhotosUseCase(taskRepo, photoStorage, log)
+	deletePhotoUC := task.NewDeleteTaskPhotoUseCase(taskRepo, photoStorage, log)
 
 	upsertProfileUC := master.NewUpsertProfileUseCase(masterRepo, userRepo, log)
 	getMyProfileUC := master.NewGetMyProfileUseCase(masterRepo, log)
@@ -111,19 +119,19 @@ func main() {
 
 	// 7. Собираем слой доставки (Delivery / HTTP)
 	authHandler := deliveryHTTP.NewAuthHandler(registerUC, loginUC, refreshUC, logoutUC, userRepo, cfg.RefreshTokenTTL, cfg.IsProd, log)
-	taskHandler := deliveryHTTP.NewTaskHandler(createTaskUC, listTasksUC, updateTaskUC, deleteTaskUC, assignMasterUC, markCompletedUC, completeTaskUC, cancelTaskUC, masterRepo, reviewRepo, log)
+	taskHandler := deliveryHTTP.NewTaskHandler(createTaskUC, listTasksUC, updateTaskUC, deleteTaskUC, assignMasterUC, markCompletedUC, completeTaskUC, cancelTaskUC, uploadPhotosUC, deletePhotoUC, taskRepo, masterRepo, reviewRepo, log)
 	masterHandler := deliveryHTTP.NewMasterHandler(upsertProfileUC, getMyProfileUC, getPublicProfileUC, deleteMyProfileUC, createServiceUC, updateServiceUC, deleteServiceUC, listServicesUC, log)
 	bidHandler := deliveryHTTP.NewBidHandler(createBidUC, listBidsUC, log)
 	reviewHandler := deliveryHTTP.NewReviewHandler(createReviewUC, updateReviewUC, deleteReviewUC, log)
 	adminHandler := deliveryHTTP.NewAdminHandler(listUsersUC, updateUserRoleUC, log)
-	router := deliveryHTTP.NewRouter(authHandler, taskHandler, masterHandler, bidHandler, reviewHandler, adminHandler, jwtManager, userRepo, log)
+	router := deliveryHTTP.NewRouter(authHandler, taskHandler, masterHandler, bidHandler, reviewHandler, adminHandler, jwtManager, userRepo, cfg.UploadDir, log)
 
 	// 8. Настраиваем HTTP-сервер с таймаутами
 	srv := &http.Server{
 		Addr:         ":" + cfg.HTTPPort,
 		Handler:      router,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 

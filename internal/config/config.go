@@ -21,6 +21,7 @@ type Config struct {
 	AccessTokenTTL  time.Duration
 	RefreshTokenTTL time.Duration
 	AdminEmail      string
+	UploadDir       string
 }
 
 // Load загружает конфигурацию из файла .env (если существует) и переменных окружения.
@@ -63,6 +64,7 @@ func Load() (*Config, error) {
 		AccessTokenTTL:  accessTokenTTL,
 		RefreshTokenTTL: refreshTokenTTL,
 		AdminEmail:      strings.ToLower(strings.TrimSpace(os.Getenv("ADMIN_EMAIL"))),
+		UploadDir:       getEnv("UPLOAD_DIR", "./uploads"),
 	}, nil
 }
 

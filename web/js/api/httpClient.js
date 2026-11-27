@@ -74,7 +74,8 @@ class HttpClient {
     if (token) {
       headers["Authorization"] = `Bearer ${token}`;
     }
-    if (body !== null) {
+    const isFormData = body instanceof FormData;
+    if (body !== null && !isFormData) {
       headers["Content-Type"] = "application/json; charset=utf-8";
     }
 
@@ -82,7 +83,7 @@ class HttpClient {
       method,
       headers,
       credentials: "include",
-      body: body !== null ? JSON.stringify(body) : undefined,
+      body: body !== null ? (isFormData ? body : JSON.stringify(body)) : undefined,
     });
 
     const data = await response.json().catch(() => ({}));
@@ -147,6 +148,16 @@ class HttpClient {
 
   deleteTask(taskId) {
     return this.request(`/tasks/${taskId}`, { method: "DELETE" });
+  }
+
+  uploadTaskPhotos(taskId, files) {
+    const fd = new FormData();
+    files.forEach((file) => fd.append("photos", file));
+    return this.request(`/tasks/${taskId}/photos`, { method: "POST", body: fd });
+  }
+
+  deleteTaskPhoto(taskId, photoId) {
+    return this.request(`/tasks/${taskId}/photos/${photoId}`, { method: "DELETE" });
   }
 
   assignMaster(taskId, masterProfileId) {

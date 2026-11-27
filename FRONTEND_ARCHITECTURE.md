@@ -52,7 +52,7 @@ web/
 - Перехватывает `401 Unauthorized` (кроме `/auth/*`), выполняет одиночный запрос `POST /api/v1/auth/refresh` через общий промис `refreshPromise` (защита от race condition), обновляет `access_token` через `tokenUpdatedHandler` и повторяет исходный запрос; при отказе refresh вызывает `unauthorizedHandler`.
 - Методы:
   - Авторизация: `login`, `register`, `logout`, `me`.
-  - Заказы и отклики: `listTasks`, `createTask`, `updateTask`, `deleteTask`, `assignMaster(taskId, masterProfileId)`, `markTaskCompleted`, `completeTask`, `cancelTask`, `createBid`, `listTaskBids`.
+  - Заказы и отклики: `listTasks`, `createTask`, `updateTask`, `deleteTask`, `uploadTaskPhotos`, `deleteTaskPhoto` (поддержка `FormData` в `request`), `assignMaster(taskId, masterProfileId)`, `markTaskCompleted`, `completeTask`, `cancelTask`, `createBid`, `listTaskBids`.
   - Мастера и услуги: `getMyMasterProfile`, `upsertMyMasterProfile`, `deleteMyMasterProfile`, `getPublicMasterProfile`, `listMasterServices`, `createMasterService`, `updateMasterService`, `deleteMasterService`.
   - Отзывы: `createReview`, `updateReview`, `deleteReview`.
   - Администрирование: `listAdminUsers`, `updateUserRole`.
@@ -73,9 +73,9 @@ web/
 - **`masterCard.js` (`renderMasterCard`, `formatRating`)**:
   - Рендерит карточку услуги каталога (`ServiceCatalogItem`): категория, рейтинг (`★ 5.0 (3)` или `Нет отзывов`), заголовок, опыт, имя мастера, счётчик выполненных заказов, город/район, цену и кнопку «Профиль мастера».
 - **`modals.js` (`ModalManager` & `showToast`)**:
-  - Управляет `#modalBackdrop` и всплывающими уведомлениями.
+  - Управляет `#modalBackdrop` (включая опциональный коллбэк `onClose` для освобождения `ObjectURL`) и всплывающими уведомлениями.
 
 ### `web/js/app.js` (Контроллер приложения)
 - **Паттерн:** Mediator + Event Delegation.
 - Последовательная инициализация `initApp()`: дожидается `validateSessionOnStartup()` (актуализация профиля и роли через `api.me()`) до первичной загрузки `loadData()`.
-- Реализует вкладку **«Мой кабинет»** (`renderCabinet`: профиль мастера с удалением `deleteMyMasterProfile`, блок услуг `X из 3` с блокировкой занятых категорий), вкладку **«Пользователи»** (`renderAdminUsers` для `admin`: поиск и назначение/снятие модераторов), расширенные действия модерации на заказах, услугах и отзывах, публичную модалку профиля мастера (`openMasterProfileModal`), модалку откликов (`openViewBidsModal`) и модалку отзывов (`openReviewFormModal`).
+- Реализует вкладку **«Мой кабинет»** (`renderCabinet`: профиль мастера с удалением `deleteMyMasterProfile`, блок услуг `X из 3` с блокировкой занятых категорий), вкладку **«Пользователи»** (`renderAdminUsers` для `admin`: поиск и назначение/снятие модераторов), загрузку/удаление до 3 фотографий в форме объявления (`openTaskFormModal`), скрытую галерею фотографий (`openTaskPhotosModal`), расширенные действия модерации на заказах, услугах и отзывах, публичную модалку профиля мастера (`openMasterProfileModal`), модалку откликов (`openViewBidsModal`) и модалку отзывов (`openReviewFormModal`).

@@ -395,11 +395,11 @@ function openLoginModal() {
     <form id="loginForm">
       <div class="form-group">
         <label>Email</label>
-        <input class="input" type="email" name="email" value="ivan@example.com" required />
+        <input class="input" type="email" name="email" placeholder="name@example.com" required />
       </div>
       <div class="form-group">
         <label>Пароль</label>
-        <input class="input" type="password" name="password" value="password123" required />
+        <input class="input" type="password" name="password" placeholder="Введите пароль" required />
       </div>
       <button class="btn btn-primary" style="width:100%" type="submit">Войти</button>
     </form>
@@ -450,8 +450,26 @@ function openRegisterModal() {
   });
 }
 
+const MAX_TASK_PHOTOS = 3;
+const MAX_TASK_PHOTO_BYTES = 5 * 1024 * 1024;
+const ALLOWED_PHOTO_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
 function openTaskFormModal(existingTask = null) {
   const isEdit = Boolean(existingTask);
+  const existingPhotos =
+    isEdit && Array.isArray(existingTask.photos) ? [...existingTask.photos] : [];
+  const markedForDeleteIds = new Set();
+  const pendingFiles = []; // { file, objectUrl }
+
+  const cleanupObjectUrls = () => {
+    while (pendingFiles.length > 0) {
+      const item = pendingFiles.pop();
+      if (item?.objectUrl) {
+        URL.revokeObjectURL(item.objectUrl);
+      }
+    }
+  };
+
   modal.open(
     isEdit ? "Редактировать объявление" : "Новое объявление заказчика",
     `
@@ -478,13 +496,123 @@ function openTaskFormModal(existingTask = null) {
       </div>
       <div class="form-group"><label>Бюджет (₽)</label><input class="input" type="number" name="budget" value="${isEdit ? Number(existingTask.budget) : 3000}" min="0" required /></div>
       <div class="form-group"><label>Подробное описание</label><textarea class="textarea" name="description" rows="3" required>${isEdit ? escapeHtml(existingTask.description) : ""}</textarea></div>
+      <div class="form-group">
+        <label>Фотографии (<span id="taskPhotosCount">0</span> из ${MAX_TASK_PHOTOS})</label>
+        <div class="photo-upload-box">
+          <input class="input" type="file" id="taskPhotosInput" accept="image/jpeg,image/png,image/webp" multiple />
+          <small style="color:var(--text-muted); font-size:12px; display:block; margin-top:4px;">
+            До 3 фото (JPG, PNG, WebP, до 5 МБ каждое)
+          </small>
+          <div id="taskPhotoPreviews" class="photo-preview-grid"></div>
+        </div>
+      </div>
       <button class="btn btn-primary" style="width:100%" type="submit">${isEdit ? "Сохранить изменения" : "Опубликовать"}</button>
     </form>
-  `
+  `,
+    { onClose: cleanupObjectUrls }
   );
 
-  document.getElementById("taskForm").addEventListener("submit", async (e) => {
+  const previewsContainer = document.getElementById("taskPhotoPreviews");
+  const countEl = document.getElementById("taskPhotosCount");
+  const fileInput = document.getElementById("taskPhotosInput");
+
+  const getActiveExisting = () =>
+    existingPhotos.filter((p) => !markedForDeleteIds.has(p.id));
+
+  const renderPhotoPreviews = () => {
+    const activeExisting = getActiveExisting();
+    const total = activeExisting.length + pendingFiles.length;
+    if (countEl) {
+      countEl.textContent = String(total);
+    }
+    if (fileInput) {
+      fileInput.disabled = total >= MAX_TASK_PHOTOS;
+    }
+    if (!previewsContainer) return;
+
+    const existingHtml = activeExisting
+      .map(
+        (p) => `
+        <div class="photo-preview-item">
+          <img src="${escapeHtml(p.url)}" alt="Фото объявления" />
+          <button type="button" class="photo-remove-btn" data-remove-existing-photo="${p.id}" title="Удалить фото">×</button>
+        </div>`
+      )
+      .join("");
+
+    const pendingHtml = pendingFiles
+      .map(
+        (item, idx) => `
+        <div class="photo-preview-item">
+          <img src="${escapeHtml(item.objectUrl)}" alt="Новое фото" />
+          <button type="button" class="photo-remove-btn" data-remove-pending-photo="${idx}" title="Убрать фото">×</button>
+        </div>`
+      )
+      .join("");
+
+    previewsContainer.innerHTML = existingHtml + pendingHtml;
+  };
+
+  renderPhotoPreviews();
+
+  if (fileInput) {
+    fileInput.addEventListener("change", () => {
+      const selected = Array.from(fileInput.files || []);
+      fileInput.value = "";
+      if (!selected.length) return;
+
+      for (const file of selected) {
+        const currentTotal = getActiveExisting().length + pendingFiles.length;
+        if (currentTotal >= MAX_TASK_PHOTOS) {
+          showToast(`Можно прикрепить не более ${MAX_TASK_PHOTOS} фотографий`, "error");
+          break;
+        }
+        if (!ALLOWED_PHOTO_TYPES.has(file.type)) {
+          showToast(`Неподдерживаемый формат файла "${file.name}". Разрешены JPG, PNG, WebP`, "error");
+          continue;
+        }
+        if (file.size <= 0 || file.size > MAX_TASK_PHOTO_BYTES) {
+          showToast(`Файл "${file.name}" превышает 5 МБ или пуст`, "error");
+          continue;
+        }
+        pendingFiles.push({
+          file,
+          objectUrl: URL.createObjectURL(file),
+        });
+      }
+      renderPhotoPreviews();
+    });
+  }
+
+  if (previewsContainer) {
+    previewsContainer.addEventListener("click", (e) => {
+      const existingBtn = e.target.closest("[data-remove-existing-photo]");
+      if (existingBtn) {
+        markedForDeleteIds.add(Number(existingBtn.dataset.removeExistingPhoto));
+        renderPhotoPreviews();
+        return;
+      }
+      const pendingBtn = e.target.closest("[data-remove-pending-photo]");
+      if (pendingBtn) {
+        const idx = Number(pendingBtn.dataset.removePendingPhoto);
+        const [removed] = pendingFiles.splice(idx, 1);
+        if (removed?.objectUrl) {
+          URL.revokeObjectURL(removed.objectUrl);
+        }
+        renderPhotoPreviews();
+      }
+    });
+  }
+
+  const taskFormEl = document.getElementById("taskForm");
+  const submitBtn = taskFormEl?.querySelector('button[type="submit"]');
+  const defaultSubmitText = submitBtn?.textContent || "";
+  let isSubmitting = false;
+
+  taskFormEl.addEventListener("submit", async (e) => {
     e.preventDefault();
+    if (isSubmitting) return;
+
     const fd = new FormData(e.target);
 
     let contactPhone = "";
@@ -506,20 +634,140 @@ function openTaskFormModal(existingTask = null) {
       description: fd.get("description"),
     };
 
+    isSubmitting = true;
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Сохранение...";
+    }
+
     try {
       if (isEdit) {
         await api.updateTask(existingTask.id, payload);
-        showToast("Объявление обновлено!", "success");
+        let deletedAny = false;
+        try {
+          for (const photoId of markedForDeleteIds) {
+            await api.deleteTaskPhoto(existingTask.id, photoId);
+            deletedAny = true;
+          }
+          if (pendingFiles.length > 0) {
+            await api.uploadTaskPhotos(
+              existingTask.id,
+              pendingFiles.map((item) => item.file)
+            );
+          }
+          showToast("Объявление обновлено!", "success");
+        } catch (photoErr) {
+          if (deletedAny) {
+            await loadData();
+          }
+          showToast(`Объявление сохранено, но ошибка с фото: ${photoErr.message}`, "error");
+          modal.close();
+          if (!deletedAny) {
+            loadData();
+          }
+          return;
+        }
       } else {
-        await api.createTask(payload);
-        showToast("Объявление опубликовано!", "success");
+        const created = await api.createTask(payload);
+        if (pendingFiles.length > 0) {
+          try {
+            await api.uploadTaskPhotos(
+              created.id,
+              pendingFiles.map((item) => item.file)
+            );
+            showToast("Объявление и фотографии опубликованы!", "success");
+          } catch (uploadErr) {
+            showToast(
+              `Объявление создано, но фото не загрузились: ${uploadErr.message}. Их можно добавить через редактирование.`,
+              "error"
+            );
+            modal.close();
+            loadData();
+            return;
+          }
+        } else {
+          showToast("Объявление опубликовано!", "success");
+        }
       }
       modal.close();
       loadData();
     } catch (err) {
       showToast(err.message, "error");
+    } finally {
+      isSubmitting = false;
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = defaultSubmitText;
+      }
     }
   });
+}
+
+function openTaskPhotosModal(taskId) {
+  const task = store.state.tasks.find((item) => item.id === Number(taskId));
+  if (!task || !Array.isArray(task.photos) || task.photos.length === 0) {
+    return;
+  }
+
+  let currentIndex = 0;
+  const photos = task.photos;
+
+  const renderGallery = () => {
+    const active = photos[currentIndex];
+    const controlsHtml =
+      photos.length > 1
+        ? `
+          <div class="gallery-controls">
+            <button type="button" class="btn btn-secondary btn-sm" id="galleryPrevBtn">← Предыдущее</button>
+            <span style="font-size:13px; color:var(--text-secondary);">Фото ${currentIndex + 1} из ${photos.length}</span>
+            <button type="button" class="btn btn-secondary btn-sm" id="galleryNextBtn">Следующее →</button>
+          </div>
+          <div class="gallery-thumbs">
+            ${photos
+              .map(
+                (p, idx) => `
+                <button type="button" class="gallery-thumb${idx === currentIndex ? " active" : ""}" data-gallery-idx="${idx}">
+                  <img src="${escapeHtml(p.url)}" alt="Миниатюра ${idx + 1}" />
+                </button>`
+              )
+              .join("")}
+          </div>
+        `
+        : `<div style="margin-top:8px; font-size:13px; color:var(--text-secondary);">Фото 1 из 1</div>`;
+
+    modal.open(
+      task.title,
+      `
+      <div class="gallery-stage">
+        <img class="gallery-img" src="${escapeHtml(active.url)}" alt="${escapeHtml(task.title)}" />
+        ${controlsHtml}
+      </div>
+    `
+    );
+
+    const prevBtn = document.getElementById("galleryPrevBtn");
+    const nextBtn = document.getElementById("galleryNextBtn");
+    if (prevBtn) {
+      prevBtn.addEventListener("click", () => {
+        currentIndex = (currentIndex - 1 + photos.length) % photos.length;
+        renderGallery();
+      });
+    }
+    if (nextBtn) {
+      nextBtn.addEventListener("click", () => {
+        currentIndex = (currentIndex + 1) % photos.length;
+        renderGallery();
+      });
+    }
+    document.querySelectorAll("[data-gallery-idx]").forEach((thumbBtn) => {
+      thumbBtn.addEventListener("click", () => {
+        currentIndex = Number(thumbBtn.dataset.galleryIdx);
+        renderGallery();
+      });
+    });
+  };
+
+  renderGallery();
 }
 
 function openServiceFormModal(existingService = null, { isModeration = false, onSuccess = null } = {}) {
@@ -965,6 +1213,8 @@ document.addEventListener("click", async (e) => {
     } catch (err) {
       showToast(err.message, "error");
     }
+  } else if (target.dataset.action === "view-task-photos") {
+    openTaskPhotosModal(target.dataset.taskId);
   } else if (target.dataset.action === "open-bid") {
     openBidModal(target.dataset.taskId, target.dataset.taskTitle);
   } else if (target.dataset.action === "view-bids") {

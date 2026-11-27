@@ -17,14 +17,20 @@ type DeleteTaskInput struct {
 }
 
 type DeleteTaskUseCase struct {
-	taskRepo task.Repository
-	log      *logrus.Entry
+	taskRepo     task.Repository
+	photoStorage PhotoStorage
+	log          *logrus.Entry
 }
 
-func NewDeleteTaskUseCase(taskRepo task.Repository, log *logrus.Logger) *DeleteTaskUseCase {
+func NewDeleteTaskUseCase(
+	taskRepo task.Repository,
+	photoStorage PhotoStorage,
+	log *logrus.Logger,
+) *DeleteTaskUseCase {
 	return &DeleteTaskUseCase{
-		taskRepo: taskRepo,
-		log:      log.WithField("usecase", "task.delete"),
+		taskRepo:     taskRepo,
+		photoStorage: photoStorage,
+		log:          log.WithField("usecase", "task.delete"),
 	}
 }
 
@@ -52,8 +58,15 @@ func (uc *DeleteTaskUseCase) Execute(ctx context.Context, input DeleteTaskInput)
 		expectedStatuses = []task.Status{task.StatusOpen}
 	}
 
-	if err := uc.taskRepo.Delete(ctx, t.ID, expectedStatuses...); err != nil {
+	storageKeys, err := uc.taskRepo.Delete(ctx, t.ID, expectedStatuses...)
+	if err != nil {
 		return fmt.Errorf("delete task: %w", err)
+	}
+
+	if len(storageKeys) > 0 && uc.photoStorage != nil {
+		if err := uc.photoStorage.DeleteTaskDir(ctx, t.ID); err != nil {
+			uc.log.WithError(err).WithField("task_id", t.ID).Warn("failed to remove task photos directory from disk")
+		}
 	}
 
 	uc.log.WithFields(logrus.Fields{

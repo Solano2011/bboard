@@ -23,4 +23,11 @@ var (
 	ErrInvalidMaster     = errors.New("master id must be positive")
 	ErrSelfAssignment    = errors.New("task author cannot assign themselves as master")
 	ErrMasterNotAssigned = errors.New("cannot complete task without assigned master")
+
+	// Ошибки работы с фотографиями
+	ErrPhotoNotFound        = errors.New("task photo not found")
+	ErrTooManyPhotos        = errors.New("maximum 3 photos allowed per task")
+	ErrPhotoTooLarge        = errors.New("photo size exceeds 5 MB limit")
+	ErrEmptyPhotoFile       = errors.New("photo file cannot be empty")
+	ErrUnsupportedPhotoType = errors.New("unsupported photo format, allowed: jpg, png, webp")
 )

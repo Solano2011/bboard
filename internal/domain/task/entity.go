@@ -19,6 +19,27 @@ const (
 	StatusCanceled          Status = "canceled"           // Отменено заказчиком
 )
 
+const (
+	MaxPhotosPerTask  = 3
+	MaxPhotoSizeBytes = 5 * 1024 * 1024
+)
+
+// Photo представляет прикреплённую к объявлению фотографию.
+type Photo struct {
+	ID         int64
+	TaskID     int64
+	StorageKey string
+	MimeType   string
+	SizeBytes  int64
+	SortOrder  int
+	CreatedAt  time.Time
+}
+
+// IsAllowedPhotoMimeType проверяет, допустим ли MIME-тип загружаемого изображения.
+func IsAllowedPhotoMimeType(mime string) bool {
+	return mime == "image/jpeg" || mime == "image/png" || mime == "image/webp"
+}
+
 var phoneRegex = regexp.MustCompile(`^\+7\d{10}$`)
 
 // Task представляет объявление (заказ) от клиента на выполнение услуги.
@@ -259,6 +280,23 @@ func (t *Task) Cancel(actorID int64, actorRole user.Role) error {
 // CanDelete проверяет права на удаление объявления.
 func (t *Task) CanDelete(actorID int64, actorRole user.Role) error {
 	if actorRole.IsModeratorOrAdmin() {
+		return nil
+	}
+	if t.AuthorID != actorID {
+		return ErrForbiddenAction
+	}
+	if t.Status != StatusOpen {
+		return ErrInvalidStatus
+	}
+	return nil
+}
+
+// CanManagePhotos проверяет права на добавление или удаление фотографий объявления.
+func (t *Task) CanManagePhotos(actorID int64, actorRole user.Role) error {
+	if actorRole.IsModeratorOrAdmin() {
+		if t.Status == StatusCompleted || t.Status == StatusCanceled {
+			return ErrInvalidStatus
+		}
 		return nil
 	}
 	if t.AuthorID != actorID {
