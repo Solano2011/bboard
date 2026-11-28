@@ -12,6 +12,7 @@ import (
 
 	"bboard/internal/config"
 	deliveryHTTP "bboard/internal/delivery/http"
+	domainAuth "bboard/internal/domain/auth"
 	"bboard/internal/repository/postgres"
 	"bboard/internal/usecase/admin"
 	"bboard/internal/usecase/auth"
@@ -20,6 +21,7 @@ import (
 	"bboard/internal/usecase/review"
 	"bboard/internal/usecase/task"
 	"bboard/pkg/logger"
+	"bboard/pkg/mailer"
 	"bboard/pkg/storage"
 	"bboard/pkg/token"
 
@@ -64,9 +66,21 @@ func main() {
 		log.WithError(err).Fatal("failed to initialize local photo storage")
 	}
 
+	var emailSender domainAuth.EmailSender
+	if cfg.SMTPHost != "" {
+		smtpMailer, err := mailer.NewSMTPMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPassword, cfg.SMTPFrom)
+		if err != nil {
+			log.WithError(err).Fatal("failed to initialize SMTP mailer")
+		}
+		emailSender = smtpMailer
+	} else {
+		emailSender = mailer.NewLogMailer(log)
+	}
+
 	// 5. Собираем слой репозиториев (Infrastructure)
 	userRepo := postgres.NewUserRepo(dbPool)
 	refreshTokenRepo := postgres.NewRefreshTokenRepo(dbPool)
+	emailVerificationRepo := postgres.NewEmailVerificationRepo(dbPool)
 	taskRepo := postgres.NewTaskRepo(dbPool)
 	masterRepo := postgres.NewMasterRepo(dbPool)
 	bidRepo := postgres.NewBidRepo(dbPool)
@@ -82,7 +96,8 @@ func main() {
 	}
 
 	// 6. Собираем слой бизнес-сценариев (UseCases)
-	registerUC := auth.NewRegisterUseCase(userRepo, refreshTokenRepo, jwtManager, cfg.RefreshTokenTTL, cfg.AdminEmail, log)
+	sendRegisterCodeUC := auth.NewSendRegisterCodeUseCase(userRepo, emailVerificationRepo, emailSender, log)
+	registerUC := auth.NewRegisterUseCase(userRepo, emailVerificationRepo, refreshTokenRepo, jwtManager, cfg.RefreshTokenTTL, cfg.AdminEmail, log)
 	loginUC := auth.NewLoginUseCase(userRepo, refreshTokenRepo, jwtManager, cfg.RefreshTokenTTL, log)
 	refreshUC := auth.NewRefreshUseCase(userRepo, refreshTokenRepo, jwtManager, cfg.RefreshTokenTTL, log)
 	logoutUC := auth.NewLogoutUseCase(refreshTokenRepo, log)
@@ -118,7 +133,7 @@ func main() {
 	updateUserRoleUC := admin.NewUpdateUserRoleUseCase(userRepo, log)
 
 	// 7. Собираем слой доставки (Delivery / HTTP)
-	authHandler := deliveryHTTP.NewAuthHandler(registerUC, loginUC, refreshUC, logoutUC, userRepo, cfg.RefreshTokenTTL, cfg.IsProd, log)
+	authHandler := deliveryHTTP.NewAuthHandler(sendRegisterCodeUC, registerUC, loginUC, refreshUC, logoutUC, userRepo, cfg.RefreshTokenTTL, cfg.IsProd, log)
 	taskHandler := deliveryHTTP.NewTaskHandler(createTaskUC, listTasksUC, updateTaskUC, deleteTaskUC, assignMasterUC, markCompletedUC, completeTaskUC, cancelTaskUC, uploadPhotosUC, deletePhotoUC, taskRepo, masterRepo, reviewRepo, log)
 	masterHandler := deliveryHTTP.NewMasterHandler(upsertProfileUC, getMyProfileUC, getPublicProfileUC, deleteMyProfileUC, createServiceUC, updateServiceUC, deleteServiceUC, listServicesUC, log)
 	bidHandler := deliveryHTTP.NewBidHandler(createBidUC, listBidsUC, log)

@@ -30,8 +30,8 @@ func (r *UserRepo) Create(ctx context.Context, u *user.User) error {
 	}
 
 	query := `
-		INSERT INTO users (name, email, phone, role, password_hash, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO users (name, email, phone, role, password_hash, email_verified_at, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id
 	`
 	err := r.pool.QueryRow(
@@ -42,6 +42,7 @@ func (r *UserRepo) Create(ctx context.Context, u *user.User) error {
 		u.Phone,
 		u.Role,
 		u.PasswordHash,
+		u.EmailVerifiedAt,
 		u.CreatedAt,
 		u.UpdatedAt,
 	).Scan(&u.ID)
@@ -59,7 +60,7 @@ func (r *UserRepo) Create(ctx context.Context, u *user.User) error {
 
 func (r *UserRepo) GetByID(ctx context.Context, id int64) (*user.User, error) {
 	query := `
-		SELECT id, name, email, phone, role, password_hash, created_at, updated_at
+		SELECT id, name, email, phone, role, password_hash, email_verified_at, created_at, updated_at
 		FROM users
 		WHERE id = $1
 	`
@@ -69,7 +70,7 @@ func (r *UserRepo) GetByID(ctx context.Context, id int64) (*user.User, error) {
 func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*user.User, error) {
 	normalizedEmail := strings.ToLower(strings.TrimSpace(email))
 	query := `
-		SELECT id, name, email, phone, role, password_hash, created_at, updated_at
+		SELECT id, name, email, phone, role, password_hash, email_verified_at, created_at, updated_at
 		FROM users
 		WHERE email = $1
 	`
@@ -85,6 +86,7 @@ func (r *UserRepo) scanUser(row pgx.Row) (*user.User, error) {
 		&u.Phone,
 		&u.Role,
 		&u.PasswordHash,
+		&u.EmailVerifiedAt,
 		&u.CreatedAt,
 		&u.UpdatedAt,
 	)
@@ -107,7 +109,7 @@ func (r *UserRepo) List(ctx context.Context, search string, limit, offset int) (
 
 	var args []any
 	query := `
-		SELECT id, name, email, phone, role, password_hash, created_at, updated_at
+		SELECT id, name, email, phone, role, password_hash, email_verified_at, created_at, updated_at
 		FROM users
 	`
 	search = strings.TrimSpace(search)
@@ -138,6 +140,7 @@ func (r *UserRepo) List(ctx context.Context, search string, limit, offset int) (
 			&u.Phone,
 			&u.Role,
 			&u.PasswordHash,
+			&u.EmailVerifiedAt,
 			&u.CreatedAt,
 			&u.UpdatedAt,
 		); err != nil {

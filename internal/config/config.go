@@ -22,6 +22,11 @@ type Config struct {
 	RefreshTokenTTL time.Duration
 	AdminEmail      string
 	UploadDir       string
+	SMTPHost        string
+	SMTPPort        string
+	SMTPUser        string
+	SMTPPassword    string
+	SMTPFrom        string
 }
 
 // Load загружает конфигурацию из файла .env (если существует) и переменных окружения.
@@ -54,6 +59,22 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid REFRESH_TOKEN_TTL duration %q: %w", refreshTTLStr, err)
 	}
 
+	smtpHost := strings.TrimSpace(os.Getenv("SMTP_HOST"))
+	smtpPort := getEnv("SMTP_PORT", "1025")
+	smtpUser := strings.TrimSpace(os.Getenv("SMTP_USER"))
+	smtpPassword := os.Getenv("SMTP_PASSWORD")
+	smtpFrom := strings.TrimSpace(os.Getenv("SMTP_FROM"))
+	if isProd {
+		if smtpHost == "" {
+			return nil, errors.New("SMTP_HOST is required in production")
+		}
+		if smtpFrom == "" {
+			return nil, errors.New("SMTP_FROM is required in production")
+		}
+	} else if smtpFrom == "" {
+		smtpFrom = "no-reply@bboard.local"
+	}
+
 	return &Config{
 		AppEnv:          appEnv,
 		IsProd:          isProd,
@@ -65,6 +86,11 @@ func Load() (*Config, error) {
 		RefreshTokenTTL: refreshTokenTTL,
 		AdminEmail:      strings.ToLower(strings.TrimSpace(os.Getenv("ADMIN_EMAIL"))),
 		UploadDir:       getEnv("UPLOAD_DIR", "./uploads"),
+		SMTPHost:        smtpHost,
+		SMTPPort:        smtpPort,
+		SMTPUser:        smtpUser,
+		SMTPPassword:    smtpPassword,
+		SMTPFrom:        smtpFrom,
 	}, nil
 }
 

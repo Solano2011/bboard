@@ -40,7 +40,7 @@ web/
 ### `web/css/styles.css`
 - **Паттерн:** Design Tokens (CSS Custom Properties) + BEM-like Component Classes.
 - Реализует дизайн-систему **Flat Design 2.0** через CSS-переменные в `:root`.
-- Определяет пастельные бейджи статусов (`.status-open`, `.status-in_progress`, `.status-pending_completion`, `.status-completed`, `.status-canceled`), сетку карточек (`.grid`), модальные окна (`.modal-backdrop`, `.modal-dialog`), уведомления (`.toast`), а также стили личного кабинета мастера (`.cabinet-grid`, `.cabinet-panel`, `.service-item`, `.switch-row`) и публичного профиля/отзывов (`.profile-header`, `.profile-avatar`, `.rating-badge`, `.review-item`, `.task-review-box`).
+- Определяет пастельные бейджи статусов (`.status-open`, `.status-in_progress`, `.status-pending_completion`, `.status-completed`, `.status-canceled`), сетку карточек (`.grid`), модальные окна (`.modal-backdrop`, `.modal-dialog`), уведомления (`.toast`), элементы формы с кодом подтверждения (`.email-code-row`, `.form-hint`, `.btn:disabled`), а также стили личного кабинета мастера (`.cabinet-grid`, `.cabinet-panel`, `.service-item`, `.switch-row`) и публичного профиля/отзывов (`.profile-header`, `.profile-avatar`, `.rating-badge`, `.review-item`, `.task-review-box`).
 
 ---
 
@@ -49,9 +49,10 @@ web/
 ### `web/js/api/httpClient.js` (Слой транспорта)
 - **Паттерн:** Facade + Token Provider Injection (Dependency Inversion).
 - Единый адаптер поверх `Fetch API` для запросов к `/api/v1/*` с `credentials: "include"` для работы с `HttpOnly` cookie `refresh_token`.
+- `ApiError` сохраняет HTTP-статус, сообщение и JSON-тело ответа (`data`), включая `retry_after_seconds` при `429`.
 - Перехватывает `401 Unauthorized` (кроме `/auth/*`), выполняет одиночный запрос `POST /api/v1/auth/refresh` через общий промис `refreshPromise` (защита от race condition), обновляет `access_token` через `tokenUpdatedHandler` и повторяет исходный запрос; при отказе refresh вызывает `unauthorizedHandler`.
 - Методы:
-  - Авторизация: `login`, `register`, `logout`, `me`.
+  - Авторизация: `login`, `sendRegisterCode`, `register`, `logout`, `me`.
   - Заказы и отклики: `listTasks`, `createTask`, `updateTask`, `deleteTask`, `uploadTaskPhotos`, `deleteTaskPhoto` (поддержка `FormData` в `request`), `assignMaster(taskId, masterProfileId)`, `markTaskCompleted`, `completeTask`, `cancelTask`, `createBid`, `listTaskBids`.
   - Мастера и услуги: `getMyMasterProfile`, `upsertMyMasterProfile`, `deleteMyMasterProfile`, `getPublicMasterProfile`, `listMasterServices`, `createMasterService`, `updateMasterService`, `deleteMasterService`.
   - Отзывы: `createReview`, `updateReview`, `deleteReview`.
@@ -78,4 +79,4 @@ web/
 ### `web/js/app.js` (Контроллер приложения)
 - **Паттерн:** Mediator + Event Delegation.
 - Последовательная инициализация `initApp()`: дожидается `validateSessionOnStartup()` (актуализация профиля и роли через `api.me()`) до первичной загрузки `loadData()`.
-- Реализует вкладку **«Мой кабинет»** (`renderCabinet`: профиль мастера с удалением `deleteMyMasterProfile`, блок услуг `X из 3` с блокировкой занятых категорий), вкладку **«Пользователи»** (`renderAdminUsers` для `admin`: поиск и назначение/снятие модераторов), загрузку/удаление до 3 фотографий в форме объявления (`openTaskFormModal`), скрытую галерею фотографий (`openTaskPhotosModal`), расширенные действия модерации на заказах, услугах и отзывах, публичную модалку профиля мастера (`openMasterProfileModal`), модалку откликов (`openViewBidsModal`) и модалку отзывов (`openReviewFormModal`).
+- Реализует регистрацию с подтверждением email (`openRegisterModal`: запрос 6-значного кода, 120-секундный таймер с синхронизацией по `429` и сбросом при смене email/закрытии модалки, проверка подтверждения пароля, блокировка повторной отправки), вкладку **«Мой кабинет»** (`renderCabinet`: профиль мастера с удалением `deleteMyMasterProfile`, блок услуг `X из 3` с блокировкой занятых категорий), вкладку **«Пользователи»** (`renderAdminUsers` для `admin`: поиск и назначение/снятие модераторов), загрузку/удаление до 3 фотографий в форме объявления (`openTaskFormModal`), скрытую галерею фотографий (`openTaskPhotosModal`), расширенные действия модерации на заказах, услугах и отзывах, публичную модалку профиля мастера (`openMasterProfileModal`), модалку откликов (`openViewBidsModal`) и модалку отзывов (`openReviewFormModal`).

@@ -421,31 +421,202 @@ function openLoginModal() {
   });
 }
 
+function formatRegisterError(err) {
+  if (!err) return "Произошла ошибка. Попробуйте ещё раз";
+  if (err.status === 429 && err.data?.retry_after_seconds) {
+    return `Повторная отправка возможна через ${err.data.retry_after_seconds} сек.`;
+  }
+
+  const msg = String(err.message || "").toLowerCase();
+  if (err.status === 409 || msg.includes("already exists")) {
+    return "Пользователь с таким email уже зарегистрирован";
+  }
+  if (err.status === 502 || msg.includes("failed to send verification email")) {
+    return "Не удалось отправить письмо. Попробуйте позже";
+  }
+
+  const messageMap = [
+    ["invalid verification code", "Неверный код подтверждения"],
+    ["verification code has expired", "Срок действия кода истёк. Запросите новый код"],
+    ["verification code not found", "Код не найден. Запросите отправку кода на email"],
+    ["verification code attempts exhausted", "Попытки ввода кода исчерпаны. Запросите новый код"],
+    ["verification code requested too soon", "Повторная отправка кода пока недоступна. Подождите немного"],
+    ["passwords do not match", "Пароли не совпадают"],
+    ["password must be at least 8 characters long", "Пароль должен содержать минимум 8 символов"],
+    ["invalid email format", "Введите корректный email"],
+    ["email cannot be empty", "Укажите email"],
+    ["user name cannot be empty", "Укажите имя"],
+  ];
+
+  for (const [needle, localized] of messageMap) {
+    if (msg.includes(needle)) {
+      return localized;
+    }
+  }
+  return err.message || "Не удалось выполнить запрос";
+}
+
 function openRegisterModal() {
+  let cooldownSeconds = 0;
+  let timerId = null;
+  let isSendingCode = false;
+  let isSubmitting = false;
+  let lastSentEmail = "";
+
+  const clearTimer = () => {
+    if (timerId !== null) {
+      clearInterval(timerId);
+      timerId = null;
+    }
+  };
+
   modal.open(
     "Регистрация",
     `
     <form id="registerForm">
       <div class="form-group"><label>Имя</label><input class="input" name="name" required /></div>
-      <div class="form-group"><label>Email</label><input class="input" type="email" name="email" required /></div>
-      <div class="form-group"><label>Телефон</label><input class="input" name="phone" placeholder="+79990000000" /></div>
-      <div class="form-group"><label>Пароль (от 8 символов)</label><input class="input" type="password" name="password" required /></div>
+      <div class="form-group">
+        <label>Email</label>
+        <div class="email-code-row">
+          <input class="input" type="email" name="email" required />
+          <button class="btn btn-secondary" id="sendRegisterCodeBtn" type="button">Отправить код</button>
+        </div>
+        <div id="registerCodeStatus" class="form-hint"></div>
+      </div>
+      <div class="form-group"><label>Код подтверждения из письма</label><input class="input" name="code" inputmode="numeric" maxlength="6" pattern="\\d{6}" placeholder="6 цифр" required /></div>
+      <div class="form-group"><label>Пароль (от 8 символов)</label><input class="input" type="password" name="password" minlength="8" required /></div>
+      <div class="form-group"><label>Подтверждение пароля</label><input class="input" type="password" name="password_confirm" minlength="8" required /></div>
       <button class="btn btn-primary" style="width:100%" type="submit">Создать аккаунт</button>
     </form>
-  `
+  `,
+    { onClose: clearTimer }
   );
 
-  document.getElementById("registerForm").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
+  const form = document.getElementById("registerForm");
+  const emailInput = form.querySelector('input[name="email"]');
+  const sendCodeBtn = document.getElementById("sendRegisterCodeBtn");
+  const statusEl = document.getElementById("registerCodeStatus");
+  const submitBtn = form.querySelector('button[type="submit"]');
+
+  const updateSendCodeBtn = () => {
+    if (!sendCodeBtn.isConnected) return;
+    if (isSendingCode) {
+      sendCodeBtn.disabled = true;
+      sendCodeBtn.textContent = "Отправка...";
+    } else if (cooldownSeconds > 0) {
+      sendCodeBtn.disabled = true;
+      sendCodeBtn.textContent = `Повторить (${cooldownSeconds}с)`;
+    } else {
+      sendCodeBtn.disabled = false;
+      sendCodeBtn.textContent = lastSentEmail ? "Отправить повторно" : "Отправить код";
+    }
+  };
+
+  const startCooldown = (seconds) => {
+    clearTimer();
+    cooldownSeconds = Math.max(0, Number(seconds) || 0);
+    updateSendCodeBtn();
+    if (cooldownSeconds > 0) {
+      timerId = setInterval(() => {
+        cooldownSeconds -= 1;
+        if (cooldownSeconds <= 0) {
+          cooldownSeconds = 0;
+          clearTimer();
+        }
+        updateSendCodeBtn();
+      }, 1000);
+    }
+  };
+
+  emailInput.addEventListener("input", () => {
+    const currentEmail = emailInput.value.trim().toLowerCase();
+    if (lastSentEmail && currentEmail !== lastSentEmail) {
+      clearTimer();
+      cooldownSeconds = 0;
+      lastSentEmail = "";
+      statusEl.textContent = "";
+      statusEl.className = "form-hint";
+      updateSendCodeBtn();
+    }
+  });
+
+  sendCodeBtn.addEventListener("click", async () => {
+    if (isSendingCode || cooldownSeconds > 0) return;
+    const email = emailInput.value.trim();
+    if (!email || !emailInput.checkValidity()) {
+      showToast("Введите корректный email", "error");
+      emailInput.focus();
+      return;
+    }
+
+    isSendingCode = true;
+    updateSendCodeBtn();
     try {
-      const res = await api.register(Object.fromEntries(fd.entries()));
+      const res = await api.sendRegisterCode(email);
+      lastSentEmail = email.toLowerCase();
+      statusEl.textContent = "Код отправлен на указанный email (действует 5 минут).";
+      statusEl.className = "form-hint success";
+      startCooldown(res.cooldown_seconds || 120);
+      showToast("Код подтверждения отправлен на почту", "success");
+    } catch (err) {
+      if (err.status === 429 && err.data?.retry_after_seconds) {
+        lastSentEmail = email.toLowerCase();
+        startCooldown(err.data.retry_after_seconds);
+      }
+      const friendlyMsg = formatRegisterError(err);
+      statusEl.textContent = friendlyMsg;
+      statusEl.className = "form-hint error";
+      showToast(friendlyMsg, "error");
+    } finally {
+      isSendingCode = false;
+      updateSendCodeBtn();
+    }
+  });
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (isSubmitting) return;
+    const fd = new FormData(e.target);
+    const payload = {
+      name: String(fd.get("name") || "").trim(),
+      email: String(fd.get("email") || "").trim(),
+      code: String(fd.get("code") || "").trim(),
+      password: String(fd.get("password") || ""),
+      password_confirm: String(fd.get("password_confirm") || ""),
+    };
+    if (!payload.name) {
+      showToast("Укажите имя", "error");
+      return;
+    }
+    if (!/^\d{6}$/.test(payload.code)) {
+      showToast("Введите 6-значный код подтверждения", "error");
+      return;
+    }
+    if (payload.password.trim().length < 8) {
+      showToast("Пароль должен содержать минимум 8 символов", "error");
+      return;
+    }
+    if (payload.password !== payload.password_confirm) {
+      showToast("Пароли не совпадают", "error");
+      return;
+    }
+
+    isSubmitting = true;
+    submitBtn.disabled = true;
+    try {
+      const res = await api.register(payload);
+      clearTimer();
       store.setSession(res.access_token, res.user);
       modal.close();
       showToast("Аккаунт создан!", "success");
       loadData();
     } catch (err) {
-      showToast(err.message, "error");
+      showToast(formatRegisterError(err), "error");
+    } finally {
+      isSubmitting = false;
+      if (submitBtn.isConnected) {
+        submitBtn.disabled = false;
+      }
     }
   });
 }

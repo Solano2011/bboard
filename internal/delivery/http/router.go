@@ -55,6 +55,7 @@ func NewRouter(
 	})
 
 	// Публичные маршруты аутентификации
+	mux.HandleFunc("POST /api/v1/auth/register/send-code", authHandler.SendRegisterCode)
 	mux.HandleFunc("POST /api/v1/auth/register", authHandler.Register)
 	mux.HandleFunc("POST /api/v1/auth/login", authHandler.Login)
 	mux.HandleFunc("POST /api/v1/auth/refresh", authHandler.Refresh)

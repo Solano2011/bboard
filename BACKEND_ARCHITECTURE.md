@@ -22,7 +22,7 @@ bboard/
 │   │   ├── bid/       (entity.go, errors.go, repository.go)
 │   │   └── review/    (entity.go, errors.go, repository.go)
 │   ├── usecase/
-│   │   ├── auth/      (tokens.go, register.go, login.go, refresh.go, logout.go)
+│   │   ├── auth/      (tokens.go, send_register_code.go, register.go, login.go, refresh.go, logout.go)
 │   │   ├── task/      (create_task.go, list_tasks.go, update_task.go, delete_task.go, assign_master.go, mark_completed.go, complete_task.go, cancel_task.go, photo_storage.go, upload_photos.go, delete_photo.go)
 │   │   ├── master/    (upsert_profile.go, get_my_profile.go, get_public_profile.go, delete_my_profile.go, create_service.go, update_service.go, delete_service.go, list_services.go)
 │   │   ├── bid/       (create_bid.go, list_bids.go)
@@ -30,6 +30,7 @@ bboard/
 │   │   └── admin/     (list_users.go, update_user_role.go)
 │   ├── repository/postgres/
 │   │   ├── user_repo.go
+│   │   ├── email_verification_repo.go
 │   │   ├── refresh_token_repo.go
 │   │   ├── task_repo.go
 │   │   ├── master_repo.go
@@ -47,8 +48,9 @@ bboard/
 │       └── admin_handler.go
 ├── pkg/
 │   ├── logger/logger.go
+│   ├── mailer/smtp.go
 │   ├── storage/local.go
-│   └── token/ (jwt.go, refresh.go)
+│   └── token/ (jwt.go, refresh.go, verification.go)
 ├── migrations/
 │   ├── 000001_create_users_table.up.sql
 │   ├── 000002_create_tasks_table.up.sql
@@ -59,7 +61,8 @@ bboard/
 │   ├── 000007_create_refresh_tokens_table.up.sql
 │   ├── 000008_rework_masters_tasks_reviews.up.sql
 │   ├── 000009_add_user_roles.up.sql
-│   └── 000010_create_task_photos_table.up.sql
+│   ├── 000010_create_task_photos_table.up.sql
+│   └── 000011_add_email_verification.up.sql
 ├── docker-compose.yml
 ├── go.mod
 ├── .env
@@ -74,13 +77,15 @@ bboard/
 Единственное место в программе, знающее обо всех слоях одновременно:
 - Загружает конфигурацию из `.env` через `config.Load()` (при ошибке выводит сообщение в `os.Stderr` и завершает процесс с кодом `1`).
 - Инициализирует логгер `logrus` и открывает пул соединений `pgxpool` к PostgreSQL.
-- Создаёт экземпляры репозиториев (`UserRepo`, `RefreshTokenRepo`, `TaskRepo`, `MasterRepo`, `BidRepo`, `ReviewRepo`).
+- Инициализирует отправитель писем (`SMTPMailer` при заданном `SMTP_HOST`, иначе dev-заглушку `LogMailer`) и локальное хранилище фотографий (`LocalPhotoStorage`).
+- Создаёт экземпляры репозиториев (`UserRepo`, `EmailVerificationRepo`, `RefreshTokenRepo`, `TaskRepo`, `MasterRepo`, `BidRepo`, `ReviewRepo`).
 - Связывает зависимости: репозитории → юзкейсы → HTTP-хэндлеры → роутер.
 - Запускает `http.Server` с таймаутами и реализует Graceful Shutdown по сигналам `SIGINT` / `SIGTERM`.
 
 ### `internal/config/config.go`
-- Загружает переменные из `.env` (через `godotenv`) и системного окружения в структуру `Config` (`HTTP_PORT`, `DATABASE_URL`, `JWT_SECRET`, `ACCESS_TOKEN_TTL`, `REFRESH_TOKEN_TTL`, `ADMIN_EMAIL`, `UPLOAD_DIR`, `LOG_LEVEL`, `APP_ENV`).
+- Загружает переменные из `.env` (через `godotenv`) и системного окружения в структуру `Config` (`HTTP_PORT`, `DATABASE_URL`, `JWT_SECRET`, `ACCESS_TOKEN_TTL`, `REFRESH_TOKEN_TTL`, `ADMIN_EMAIL`, `UPLOAD_DIR`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `LOG_LEVEL`, `APP_ENV`).
 - Завершает запуск с ошибкой при отсутствии критически важных параметров (`JWT_SECRET`, `DATABASE_URL`).
+- В `prod`/`production` дополнительно требует явного задания `SMTP_HOST` и `SMTP_FROM`.
 
 ---
 
@@ -91,13 +96,13 @@ bboard/
 ### `internal/domain/category` (Категории работ)
 - **`category.go`**: общий словарь допустимых категорий (`electric`, `plumbing`, `earthworks`, `repair`, `cargo`, `other`), функции `Normalize(raw)` и `IsValid(cat)` для строгой валидации (whitelist) на уровне домена.
 
-### `internal/domain/auth` (Refresh-токены)
-- **`entity.go`**: сущность `RefreshToken` (`UserID`, `TokenHash`, `ExpiresAt`, `RevokedAt`) с методами `IsRevoked()` и `IsExpired(now)`.
-- **`errors.go`**: `ErrInvalidRefreshToken`, `ErrRefreshTokenExpired`, `ErrRefreshTokenRevoked`.
-- **`repository.go`**: интерфейс `RefreshTokenRepository` (`Create`, `GetByHash`, `RevokeIfActive`, `RevokeByHash`, `RevokeAllByUserID`).
+### `internal/domain/auth` (Refresh-токены и подтверждение email)
+- **`entity.go`**: сущность `RefreshToken` (`IsRevoked()`, `IsExpired(now)`) и `EmailVerificationCode` (6 цифр, TTL `5m`, окно повторной отправки `2m`, до `5` попыток) с методами `IsUsed()`, `IsExpired(now)`, `IsExhausted()`, `CanResend(now)`.
+- **`errors.go`**: `ErrInvalidRefreshToken`, `ErrRefreshTokenExpired`, `ErrRefreshTokenRevoked`, `ErrPasswordMismatch`, `ErrInvalidVerificationCode`, `ErrVerificationCodeNotFound`, `ErrVerificationCodeExpired`, `ErrVerificationCodeExhausted`, `ErrVerificationResendTooSoon`, `ResendCooldownError`, `ErrEmailDeliveryFailed`.
+- **`repository.go`**: интерфейсы `RefreshTokenRepository`, `EmailVerificationRepository` (`SaveAndSendCode`, `VerifyCodeAndCreateUser`) и `EmailSender` (`SendVerificationCode`).
 
 ### `internal/domain/user` (Пользователи)
-- **`entity.go`**: структура `User` с ролевой моделью `Role` (`user`, `moderator`, `admin`), конструктор `NewUser` (по умолчанию `RoleUser`) и метод `ChangeModeratorRole` (смена роли между `user` и `moderator` только администратором, запрет менять себе и `admin`).
+- **`entity.go`**: структура `User` (включая `EmailVerifiedAt *time.Time` и ролевую модель `Role`: `user`, `moderator`, `admin`), строгий валидатор `NormalizeAndValidateEmail` (проверка через `net/mail` с запретом display-name, CR/LF и пробелов), конструктор `NewUser` и метод `ChangeModeratorRole`.
 - **`errors.go`**: `ErrUserNotFound`, `ErrEmailAlreadyExists`, `ErrInvalidCredentials`, `ErrInvalidEmail`, `ErrInvalidRole`, `ErrForbiddenRoleChange`, `ErrCannotChangeOwnRole`.
 - **`repository.go`**: интерфейс `Repository` (`Create`, `GetByID`, `GetByEmail`, `List`, `Update`, `UpdateRole`, `PromoteToAdminByEmail`).
 
@@ -134,7 +139,7 @@ bboard/
 ## 3. Слой Бизнес-сценариев — `internal/usecase` (Application)
 
 ### `internal/usecase/auth`
-- **`tokens.go`**, **`register.go`**, **`login.go`**, **`refresh.go`**, **`logout.go`**: выпуск пары JWT access + refresh (SHA-256), атомарная ротация с отзывом всех сессий при повторном использовании, выход.
+- **`tokens.go`**, **`send_register_code.go`**, **`register.go`**, **`login.go`**, **`refresh.go`**, **`logout.go`**: отправка одноразового 6-значного кода подтверждения email, проверка подтверждения пароля и кода при регистрации, выпуск пары JWT access + refresh (SHA-256), атомарная ротация с отзывом всех сессий при повторном использовании, выход.
 
 ### `internal/usecase/task`
 - **`create_task.go`**, **`list_tasks.go`**, **`update_task.go`**, **`cancel_task.go`**: базовый жизненный цикл объявлений.
@@ -160,6 +165,7 @@ bboard/
 ## 4. Слой Хранения — `internal/repository/postgres` (Infrastructure)
 
 - **`user_repo.go` (`UserRepo`)**: работа с `users`.
+- **`email_verification_repo.go` (`EmailVerificationRepo`)**: `SaveAndSendCode` (блокировка `pg_advisory_xact_lock(hashtext($1))` + `FOR UPDATE`, проверка cooldown `2m`, сброс `attempts = 0`/`used_at = NULL`, отправка письма до коммита) и `VerifyCodeAndCreateUser` (сравнение SHA-256 через `subtle.ConstantTimeCompare`, инкремент `attempts` при ошибке, создание подтверждённого пользователя в одной транзакции).
 - **`refresh_token_repo.go` (`RefreshTokenRepo`)**: работа с `refresh_tokens`.
 - **`task_repo.go` (`TaskRepo`)**: `assigned_master_id`, оптимистическая проверка `allowedPrevStatuses` в `Update` и транзакционное завершение `CompleteAndIncrementMasterCounter` с `FOR UPDATE`.
 - **`master_repo.go` (`MasterRepo`)**: CRUD профилей и услуг, блокировка профиля `FOR UPDATE` при создании/активации услуги для соблюдения лимита `3`, маппинг `pgErr.ConstraintName` (`23505` / `23503` / `23514`), проверка совместных заказов `HasSharedTaskWithProfile`.
@@ -172,7 +178,7 @@ bboard/
 
 - **`middleware/logger.go`**, **`middleware/auth.go`** (`Auth`, `OptionalAuth` с загрузкой актуальной роли из БД, `RequireRole`), **`response.go`**.
 - **`router.go` (`NewRouter`)**: публичные маршруты `/health`, `/api/v1/auth/*`, `GET /tasks`, `GET /masters`, `GET /masters/{id}`, `GET /master-services` (с `optAuthMW`), приватные маршруты с `authMW`, админские маршруты `/api/v1/admin/*` с `RequireRole(user.RoleAdmin)` и статика `web/` с `Cache-Control: no-cache`.
-- **`auth_handler.go`**: `POST /auth/register`, `/login`, `/refresh`, `/logout`, `GET /auth/me` (актуальный профиль из БД с полем `role`).
+- **`auth_handler.go`**: `POST /auth/register/send-code` (`cooldown_seconds`, `retry_after_seconds` при `429`, `502` при ошибке SMTP), `POST /auth/register` (`code`, `password_confirm`, `email_verified_at`), `/login`, `/refresh`, `/logout`, `GET /auth/me` (актуальный профиль из БД с полем `role`).
 - **`task_handler.go`**: `POST/GET /tasks`, `PUT/DELETE /tasks/{id}`, `POST /tasks/{id}/assign`, `/mark-completed`, `/complete`, `/cancel`, `POST /tasks/{id}/photos`, `DELETE /tasks/{id}/photos/{photoId}` (multipart-загрузка до 3 фото по 5 МБ, батч-загрузка фото в `List`, раздача `/uploads/` без листинга директорий с `X-Content-Type-Options: nosniff`).
 - **`master_handler.go`**: `GET/PUT/DELETE /api/v1/master-profile/me`, `GET /api/v1/masters/{id}`, `GET /api/v1/master-services` (и alias `/masters`), `POST/PUT/DELETE /api/v1/master-services/{id}`.
 - **`bid_handler.go`**: `POST/GET /api/v1/tasks/{id}/bids`.
@@ -183,8 +189,11 @@ bboard/
 
 ## 6. Утилиты и инфраструктура (`pkg`, `migrations`, Docker)
 
-- **`pkg/logger/logger.go`**, **`pkg/token/jwt.go`**, **`pkg/token/refresh.go`**.
+- **`pkg/logger/logger.go`**, **`pkg/token/jwt.go`**, **`pkg/token/refresh.go`**, **`pkg/token/verification.go`**, **`pkg/mailer/smtp.go`** (`SMTPMailer` с `STARTTLS` / TLS на порту `465`, таймаутами и защитой заголовков от инъекций + `LogMailer`).
 - **`migrations/`**:
   1–7. Базовые таблицы (`users`, `tasks`, `master_profiles`, `task_bids`, контакты, `refresh_tokens`).
   8. `000008_rework_masters_tasks_reviews.up.sql`: разделение на `master_profiles` и `master_services` (с переносом данных), замена `tasks.master_id` на `assigned_master_id`, перенос `task_bids → task_responses`, создание `master_reviews`.
-- **`docker-compose.yml`**, **`go.mod`**, **`.env`**, **`.gitignore`**.
+  9. `000009_add_user_roles.up.sql`: ролевая модель (`role` в `users`).
+  10. `000010_create_task_photos_table.up.sql`: фотографии объявлений (`task_photos`).
+  11. `000011_add_email_verification.up.sql`: `email_verified_at` в `users` и таблица `email_verification_codes`.
+- **`docker-compose.yml`** (`postgres`, `migrate`, локальный SMTP-перехватчик `mailpit` на портах `1025`/`8025`), **`go.mod`**, **`.env`**, **`.gitignore`**.

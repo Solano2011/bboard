@@ -21,6 +21,7 @@ const (
 
 // AuthHandler обрабатывает HTTP-запросы, связанные с аутентификацией и регистрацией.
 type AuthHandler struct {
+	sendCodeUC *auth.SendRegisterCodeUseCase
 	registerUC *auth.RegisterUseCase
 	loginUC    *auth.LoginUseCase
 	refreshUC  *auth.RefreshUseCase
@@ -33,6 +34,7 @@ type AuthHandler struct {
 
 // NewAuthHandler создаёт новый экземпляр HTTP-хэндлера авторизации.
 func NewAuthHandler(
+	sendCodeUC *auth.SendRegisterCodeUseCase,
 	registerUC *auth.RegisterUseCase,
 	loginUC *auth.LoginUseCase,
 	refreshUC *auth.RefreshUseCase,
@@ -43,6 +45,7 @@ func NewAuthHandler(
 	log *logrus.Logger,
 ) *AuthHandler {
 	return &AuthHandler{
+		sendCodeUC: sendCodeUC,
 		registerUC: registerUC,
 		loginUC:    loginUC,
 		refreshUC:  refreshUC,
@@ -54,11 +57,17 @@ func NewAuthHandler(
 	}
 }
 
+type sendRegisterCodeRequest struct {
+	Email string `json:"email"`
+}
+
 type registerRequest struct {
-	Name     string `json:"name"`
-	Email    string `json:"email"`
-	Phone    string `json:"phone"`
-	Password string `json:"password"`
+	Name            string `json:"name"`
+	Email           string `json:"email"`
+	Phone           string `json:"phone"`
+	Password        string `json:"password"`
+	PasswordConfirm string `json:"password_confirm"`
+	Code            string `json:"code"`
 }
 
 type loginRequest struct {
@@ -67,12 +76,13 @@ type loginRequest struct {
 }
 
 type userResponse struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	Email     string    `json:"email"`
-	Phone     string    `json:"phone,omitempty"`
-	Role      user.Role `json:"role"`
-	CreatedAt time.Time `json:"created_at"`
+	ID              int64      `json:"id"`
+	Name            string     `json:"name"`
+	Email           string     `json:"email"`
+	Phone           string     `json:"phone,omitempty"`
+	Role            user.Role  `json:"role"`
+	EmailVerifiedAt *time.Time `json:"email_verified_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
 }
 
 type authResponse struct {
@@ -81,7 +91,34 @@ type authResponse struct {
 }
 
 type errorResponse struct {
-	Error string `json:"error"`
+	Error             string `json:"error"`
+	RetryAfterSeconds *int   `json:"retry_after_seconds,omitempty"`
+}
+
+// SendRegisterCode обрабатывает POST /api/v1/auth/register/send-code.
+func (h *AuthHandler) SendRegisterCode(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
+	var req sendRegisterCodeRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+
+	if err := dec.Decode(&req); err != nil {
+		h.log.WithError(err).Warn("failed to decode send-code request body")
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid JSON payload"})
+		return
+	}
+
+	if err := h.sendCodeUC.Execute(r.Context(), auth.SendRegisterCodeInput{Email: req.Email}); err != nil {
+		h.handleDomainError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":             "sent",
+		"cooldown_seconds":   int(domainAuth.VerificationResendWindow.Seconds()),
+		"expires_in_seconds": int(domainAuth.VerificationCodeTTL.Seconds()),
+	})
 }
 
 // Register обрабатывает POST /api/v1/auth/register.
@@ -99,10 +136,12 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out, err := h.registerUC.Execute(r.Context(), auth.RegisterInput{
-		Name:     req.Name,
-		Email:    req.Email,
-		Phone:    req.Phone,
-		Password: req.Password,
+		Name:            req.Name,
+		Email:           req.Email,
+		Phone:           req.Phone,
+		Password:        req.Password,
+		PasswordConfirm: req.PasswordConfirm,
+		Code:            req.Code,
 	})
 	if err != nil {
 		h.handleDomainError(w, err)
@@ -233,22 +272,45 @@ func mapUserToResponse(u *user.User) userResponse {
 		role = user.RoleUser
 	}
 	return userResponse{
-		ID:        u.ID,
-		Name:      u.Name,
-		Email:     u.Email,
-		Phone:     u.Phone,
-		Role:      role,
-		CreatedAt: u.CreatedAt,
+		ID:              u.ID,
+		Name:            u.Name,
+		Email:           u.Email,
+		Phone:           u.Phone,
+		Role:            role,
+		EmailVerifiedAt: u.EmailVerifiedAt,
+		CreatedAt:       u.CreatedAt,
 	}
 }
 
 func (h *AuthHandler) handleDomainError(w http.ResponseWriter, err error) {
+	var cooldownErr *domainAuth.ResendCooldownError
+	if errors.As(err, &cooldownErr) {
+		retry := cooldownErr.RetryAfterSeconds
+		writeJSON(w, http.StatusTooManyRequests, errorResponse{
+			Error:             cooldownErr.Error(),
+			RetryAfterSeconds: &retry,
+		})
+		return
+	}
+
 	switch {
 	case errors.Is(err, user.ErrEmptyName),
 		errors.Is(err, user.ErrEmptyEmail),
 		errors.Is(err, user.ErrInvalidEmail),
-		errors.Is(err, user.ErrWeakPassword):
+		errors.Is(err, user.ErrWeakPassword),
+		errors.Is(err, domainAuth.ErrPasswordMismatch),
+		errors.Is(err, domainAuth.ErrInvalidVerificationCode),
+		errors.Is(err, domainAuth.ErrVerificationCodeNotFound),
+		errors.Is(err, domainAuth.ErrVerificationCodeExpired):
 		writeJSON(w, http.StatusBadRequest, errorResponse{Error: err.Error()})
+
+	case errors.Is(err, domainAuth.ErrVerificationCodeExhausted),
+		errors.Is(err, domainAuth.ErrVerificationResendTooSoon):
+		writeJSON(w, http.StatusTooManyRequests, errorResponse{Error: err.Error()})
+
+	case errors.Is(err, domainAuth.ErrEmailDeliveryFailed):
+		h.log.WithError(err).Error("email delivery failed")
+		writeJSON(w, http.StatusBadGateway, errorResponse{Error: domainAuth.ErrEmailDeliveryFailed.Error()})
 
 	case errors.Is(err, user.ErrUserAlreadyExist):
 		writeJSON(w, http.StatusConflict, errorResponse{Error: err.Error()})

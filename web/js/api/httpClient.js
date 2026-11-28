@@ -1,7 +1,8 @@
 export class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, data = null) {
     super(message);
     this.status = status;
+    this.data = data;
   }
 }
 
@@ -44,7 +45,7 @@ class HttpClient {
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data.access_token) {
-          throw new ApiError(response.status, data.error || "Сессия истекла");
+          throw new ApiError(response.status, data.error || "Сессия истекла", data);
         }
         this.tokenUpdatedHandler(data.access_token, data.user);
         return data.access_token;
@@ -110,7 +111,7 @@ class HttpClient {
       if (response.status === 401 && token && !skipUnauthorizedHandler && !this.#isAuthEndpoint(path)) {
         this.unauthorizedHandler(data.error || "Сессия истекла");
       }
-      throw new ApiError(response.status, data.error || `Ошибка сервера (${response.status})`);
+      throw new ApiError(response.status, data.error || `Ошибка сервера (${response.status})`, data);
     }
 
     return data;
@@ -119,6 +120,10 @@ class HttpClient {
   // Auth
   login(email, password) {
     return this.request("/auth/login", { method: "POST", body: { email, password } });
+  }
+
+  sendRegisterCode(email) {
+    return this.request("/auth/register/send-code", { method: "POST", body: { email } });
   }
 
   register(payload) {
